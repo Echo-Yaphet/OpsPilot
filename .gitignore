@@ -7,3 +7,6 @@ grafana-data/
 prometheus-data/
 loki-data/
 
+
+work/dashboard-init-backup/
+**/node_modules/
