@@ -1,0 +1,17 @@
+[
+  {
+    "description": "failing async test",
+    "schema": {
+      "description": "Ajv-scpecific async schema",
+      "$async": true,
+      "type": "integer"
+    },
+    "tests": [
+      {
+        "description": "integer is invalid (failing test)",
+        "data": 1,
+        "valid": false
+      }
+    ]
+  }
+]

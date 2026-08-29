@@ -1,0 +1,196 @@
+name: opspilot
+
+x-service-common: &service-common
+  restart: unless-stopped
+  networks: [opspilot]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  dashboard:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    environment:
+      NEXT_PUBLIC_OPSPILOT_API: http://localhost:8080
+    ports: ["3001:3001"]
+    depends_on: [control-api]
+
+  user-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/user-service/Dockerfile
+    environment:
+      SERVICE_NAME: user-service
+      PORT: 8001
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: opspilot
+      MYSQL_PASSWORD: opspilot
+      MYSQL_DATABASE: opspilot
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8001:8001"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  order-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/order-service/Dockerfile
+    environment:
+      SERVICE_NAME: order-service
+      PORT: 8002
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: opspilot
+      MYSQL_PASSWORD: opspilot
+      MYSQL_DATABASE: opspilot
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8002:8002"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  payment-service:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/payment-service/Dockerfile
+    environment:
+      SERVICE_NAME: payment-service
+      PORT: 8003
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: opspilot
+      MYSQL_PASSWORD: opspilot
+      MYSQL_DATABASE: opspilot
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8003:8003"]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  control-api:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/control-api/Dockerfile
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      DATABASE_PATH: /data/opspilot.db
+      EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
+      EXECUTOR_GATEWAY_TOKEN: opspilot-local-executor-token
+    ports: ["8080:8080"]
+    volumes:
+      - control-data:/data
+    depends_on: [prometheus, loki, alertmanager, executor-gateway]
+
+  executor-gateway:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/executor-gateway/Dockerfile
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      EXECUTOR_GATEWAY_TOKEN: opspilot-local-executor-token
+      EXECUTOR_DATABASE_PATH: /data/executor.db
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - executor-data:/data
+
+  mysql:
+    <<: *service-common
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: opspilot
+      MYSQL_USER: opspilot
+      MYSQL_PASSWORD: opspilot
+    ports: ["3306:3306"]
+    volumes: [mysql-data:/var/lib/mysql]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -proot --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    <<: *service-common
+    image: redis:7.4-alpine
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  prometheus:
+    <<: *service-common
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    ports: ["9090:9090"]
+    volumes:
+      - ./infra/prometheus:/etc/prometheus:ro
+      - prometheus-data:/prometheus
+
+  alertmanager:
+    <<: *service-common
+    image: prom/alertmanager:v0.28.1
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    ports: ["9093:9093"]
+    volumes:
+      - ./infra/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+
+  grafana:
+    <<: *service-common
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    ports: ["3000:3000"]
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus, loki]
+
+  loki:
+    <<: *service-common
+    image: grafana/loki:3.5.3
+    command: -config.file=/etc/loki/local-config.yaml
+    ports: ["3100:3100"]
+    volumes:
+      - ./infra/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+
+  promtail:
+    <<: *service-common
+    image: grafana/promtail:3.5.3
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./infra/loki/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [loki]
+
+networks:
+  opspilot: {}
+
+volumes:
+  mysql-data: {}
+  prometheus-data: {}
+  grafana-data: {}
+  loki-data: {}
+  alertmanager-data: {}
+  control-data: {}
+  executor-data: {}

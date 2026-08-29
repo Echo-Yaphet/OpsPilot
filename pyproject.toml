@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+pythonpath = ["apps/control-api"]
+testpaths = ["tests"]
+

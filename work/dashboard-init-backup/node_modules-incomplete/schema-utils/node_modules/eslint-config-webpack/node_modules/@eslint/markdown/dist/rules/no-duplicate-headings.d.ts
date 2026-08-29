@@ -1,0 +1,45 @@
+declare namespace _default {
+    namespace meta {
+        let type: "problem";
+        namespace docs {
+            let description: string;
+            let url: string;
+        }
+        namespace messages {
+            let duplicateHeading: string;
+        }
+        let schema: {
+            type: "object";
+            properties: {
+                checkSiblingsOnly: {
+                    type: "boolean";
+                };
+            };
+            additionalProperties: false;
+        }[];
+        let defaultOptions: [{
+            checkSiblingsOnly: false;
+        }];
+    }
+    function create(context: import("@eslint/core").RuleContext<{
+        LangOptions: import("../types.js").MarkdownLanguageOptions;
+        Code: import("../index.js").MarkdownSourceCode;
+        RuleOptions: NoDuplicateHeadingsOptions;
+        Node: import("mdast").Node | import("../language/markdown-source-code.js").InlineConfigComment;
+        MessageIds: "duplicateHeading";
+    }>): {
+        heading(node: import("mdast").Heading): void;
+        "heading *"({ type, value }: any): void;
+        "heading:exit"(node: import("mdast").Heading): void;
+    };
+}
+export default _default;
+export type NoDuplicateHeadingsMessageIds = "duplicateHeading";
+export type NoDuplicateHeadingsOptions = [{
+    checkSiblingsOnly?: boolean;
+}];
+export type NoDuplicateHeadingsRuleDefinition = MarkdownRuleDefinition<{
+    RuleOptions: NoDuplicateHeadingsOptions;
+    MessageIds: NoDuplicateHeadingsMessageIds;
+}>;
+import type { MarkdownRuleDefinition } from "../types.js";

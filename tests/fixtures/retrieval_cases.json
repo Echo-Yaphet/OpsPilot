@@ -1,0 +1,14 @@
+[
+  {
+    "service": "payment-service",
+    "symptom": "Redis unavailable",
+    "root_cause": "Redis dependency is unavailable",
+    "expected_runbook_id": "redis-dependency-recovery-v1"
+  },
+  {
+    "service": "order-service",
+    "symptom": "MySQL connection refused",
+    "root_cause": "MySQL dependency is unavailable",
+    "expected_runbook_id": "mysql-dependency-recovery-v1"
+  }
+]

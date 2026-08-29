@@ -1,0 +1,9 @@
+.git
+**/.git
+**/node_modules
+**/.next
+**/.wrangler
+work
+outputs
+__pycache__
+*.pyc

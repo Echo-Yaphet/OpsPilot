@@ -1,0 +1,22 @@
+groups:
+  - name: opspilot
+    rules:
+      - alert: RedisDependencyDown
+        expr: dependency_up{dependency="redis"} == 0
+        for: 10s
+        labels: {severity: critical}
+        annotations:
+          summary: "Redis is unavailable to {{ $labels.service }}"
+      - alert: MySQLDependencyDown
+        expr: dependency_up{dependency="mysql"} == 0
+        for: 10s
+        labels: {severity: critical}
+        annotations:
+          summary: "MySQL is unavailable to {{ $labels.service }}"
+      - alert: ServiceHighCPUProxy
+        expr: rate(http_request_duration_seconds_sum[1m]) > 1
+        for: 15s
+        labels: {severity: warning}
+        annotations:
+          summary: "Sustained expensive work on {{ $labels.service }}"
+
