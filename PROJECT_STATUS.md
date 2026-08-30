@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-29 (retrieval quality foundation milestone)
+Last updated: 2026-08-30 (optional semantic retrieval milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Typed, explainable SQLite-backed retrieval and offline dependency fixtures are complete. Continue with optional semantic retrieval or the next production-safety milestone while keeping the Redis incident flow green.
+4. Optional semantic retrieval with deterministic fallback is complete. Continue with evidence correlation or the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -74,6 +74,10 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Knowledge retrieval returns stable typed matches internally while preserving dictionary-shaped evidence and the numeric runbook `score` field at the HTTP boundary.
 - Runbook and historical matches include score explanations; verified, resolved historical outcomes rank first, with recency breaking equal-quality ties.
 - Offline Redis and MySQL retrieval fixtures protect deterministic dependency hits before a future semantic retriever is introduced.
+- An optional semantic retriever composes behind the existing `KnowledgeRetriever` seam and uses an injectable embedding provider plus an OpenAI-compatible HTTP adapter.
+- Semantic matches supplement rather than displace exact deterministic results; deterministic scores and ordering remain intact.
+- Missing configuration, endpoint failures, timeouts, malformed vector counts, and invalid dimensions fail open to SQLite deterministic retrieval.
+- The local MVP starts and tests without an embedding model, service, or API key.
 
 ### Dashboard
 
@@ -94,6 +98,14 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the optional semantic retrieval milestone:
+
+- All 27 backend tests passed, including fuzzy semantic ranking, deterministic-baseline preservation, embedding-service failure fallback, ambiguous-symptom fixtures, and wrong-root-cause negative fixtures.
+- The rebuilt Control API production image was deployed without embedding configuration; SQLite fallback remained active and final `make smoke` passed.
+- All 13 Docker Compose services were running after acceptance; Redis and MySQL were healthy.
+- A real Redis outage with the fuzzy symptom `checkout cache cannot be reached` produced Redis metric `0`, Loki error evidence, RCA confidence `0.92`, and the Redis runbook without executing in recommendation-only mode.
+- The same outage with `execute=true`, `approved=false` remained `awaiting_approval`; explicit approval restarted Redis through the gateway and deep Verification resolved on check three with `verified=true`.
 
 Latest verification for the retrieval quality foundation milestone:
 
@@ -235,7 +247,7 @@ Local entry points:
 
 - LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
-- Typed, explainable deterministic retrieval and offline dependency fixtures are implemented; semantic RAG, embeddings, evidence correlation, and learned long-term memory are not yet implemented.
+- Typed deterministic retrieval and optional embedding-based semantic ranking are implemented; corpus embedding caches/vector indexes, evidence correlation, and learned long-term memory are not yet implemented.
 - Verification now checks container state, application health, and dependency metrics, but uses fixed local thresholds rather than configurable SLO policies.
 - Old error logs can appear in the ten-minute Loki window. Metrics currently take precedence for Redis/MySQL RCA, but evidence scoring needs time and incident correlation.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
@@ -281,7 +293,7 @@ Local entry points:
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
-- Add optional semantic ranking/RAG behind the existing knowledge seam and compare it against deterministic fixtures; retain SQLite fallback when no model is configured.
+- Add incident-time evidence correlation and a larger labeled retrieval evaluation set; consider a persisted vector index only when corpus size requires it.
 - Replace the local shared gateway token with short-lived workload identity and narrow the gateway's Docker/API permissions.
 - Generalize Verification Agent thresholds and time windows into per-service SLO policies.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.

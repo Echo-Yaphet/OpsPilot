@@ -10,5 +10,17 @@
     "symptom": "MySQL connection refused",
     "root_cause": "MySQL dependency is unavailable",
     "expected_runbook_id": "mysql-dependency-recovery-v1"
+  },
+  {
+    "service": "payment-service",
+    "symptom": "checkout cache cannot be reached",
+    "root_cause": "Redis dependency is unavailable",
+    "expected_runbook_id": "redis-dependency-recovery-v1"
+  },
+  {
+    "service": "payment-service",
+    "symptom": "database connection pool exhausted",
+    "root_cause": "Unknown upstream failure",
+    "expected_runbook_id": null
   }
 ]

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .execution import GatewayExecutor
+from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
 from .storage import IncidentStore
 from .tools import LiveOpsTools
@@ -16,11 +17,24 @@ from .workflow import IncidentWorkflow
 app = FastAPI(title="OpsPilot Control API", version="0.1.0")
 tools = LiveOpsTools(settings)
 store = IncidentStore(settings.database_path)
+knowledge_retriever = store
+if settings.embedding_base_url and settings.embedding_model:
+    knowledge_retriever = SemanticKnowledgeRetriever(
+        fallback=store,
+        corpus=store,
+        embeddings=OpenAICompatibleEmbeddingProvider(
+            settings.embedding_base_url,
+            settings.embedding_model,
+            settings.embedding_api_key,
+            settings.embedding_timeout,
+        ),
+        minimum_similarity=settings.semantic_minimum_similarity,
+    )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,
     settings.executor_gateway_token,
     settings.executor_gateway_timeout,
-), knowledge_retriever=store)
+), knowledge_retriever=knowledge_retriever)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3001", "http://127.0.0.1:3001"],

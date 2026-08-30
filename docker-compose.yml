@@ -88,6 +88,11 @@ services:
       DATABASE_PATH: /data/opspilot.db
       EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
       EXECUTOR_GATEWAY_TOKEN: opspilot-local-executor-token
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT:-10}
+      SEMANTIC_MINIMUM_SIMILARITY: ${SEMANTIC_MINIMUM_SIMILARITY:-0.75}
     ports: ["8080:8080"]
     volumes:
       - control-data:/data

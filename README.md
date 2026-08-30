@@ -100,6 +100,8 @@ tests/                Agent 闭环与安全门测试
 
 RCA 完成初步判断后会通过独立的知识检索 seam 查询 SQLite 中的确定性 runbook 和同服务、同根因的历史 incident。检索 seam 使用稳定的类型化结果；写入 `runbook` 和 `incident_history` evidence 时仍序列化为原有字典结构，不增加或改变 `IncidentState` 字段。每个结果包含总分和 `score_explanation` 因子，历史记录优先采用已验证且已解决的结果。Solution 优先使用精确命中的 runbook 标题和类型化策略可校验的命令。当前内置 Redis、MySQL 和服务降级三份基础 runbook，并用离线 Redis/MySQL fixtures 锁定基础命中，为后续语义 RAG 保留可评估的替换边界。
 
+可选语义排序层现已位于同一 seam 后方。默认不配置模型时仍只使用 SQLite 确定性检索；配置 OpenAI-compatible embedding endpoint 后，语义结果只补充确定性结果，精确命中的顺序和原有数字分数不会被降低。embedding 服务超时、报错或返回异常数据时会自动回退，不影响 Control API 启动和分析。可选环境变量为 `EMBEDDING_BASE_URL`、`EMBEDDING_MODEL`、`EMBEDDING_API_KEY`、`EMBEDDING_TIMEOUT` 和 `SEMANTIC_MINIMUM_SIMILARITY`。语义命中仍只影响 RCA/Solution evidence 与建议，执行必须继续通过策略和人工审批门。
+
 批准执行后，Verification Agent 会进行有界轮询，同时要求修复目标容器运行、受影响服务 `/health` 恢复、Prometheus 依赖指标恢复为 `1`。任一条件在时限内未恢复，incident 会进入 `verification_failed`，并在 evidence 中保留最后一次检查结果。
 
 Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。网关把允许、拒绝和执行失败写入自己的持久化 SQLite 审计库。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。

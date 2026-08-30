@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from opspilot import main
 from opspilot.models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
+from opspilot.knowledge import SemanticKnowledgeRetriever
 from opspilot.storage import IncidentStore
 
 
@@ -195,5 +196,49 @@ def test_offline_retrieval_evaluation_cases_preserve_dependency_hits(tmp_path):
 
     for case in cases:
         matches = store.retrieve_runbooks(case["service"], case["symptom"], case["root_cause"])
-        assert matches[0].runbook_id == case["expected_runbook_id"]
-        assert matches[0].score_explanation.factors["root_cause_match"] == 100
+        if case["expected_runbook_id"] is None:
+            assert matches == []
+        else:
+            assert matches[0].runbook_id == case["expected_runbook_id"]
+            assert matches[0].score_explanation.factors["root_cause_match"] == 100
+
+
+class FakeEmbeddings:
+    def embed(self, texts):
+        return [[1.0, 0.0]] + [
+            [1.0, 0.0] if "MySQL dependency" in text else [0.0, 1.0]
+            for text in texts[1:]
+        ]
+
+
+class FailedEmbeddings:
+    def embed(self, texts):
+        raise RuntimeError("embedding service unavailable")
+
+
+def test_semantic_retriever_adds_fuzzy_match_without_displacing_deterministic_baseline(tmp_path):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    retriever = SemanticKnowledgeRetriever(store, store, FakeEmbeddings(), minimum_similarity=0.8)
+
+    fuzzy = retriever.retrieve_runbooks(
+        "order-service", "primary datastore is unreachable", "Unknown upstream failure"
+    )
+    baseline = retriever.retrieve_runbooks(
+        "payment-service", "Redis unavailable", "Redis dependency is unavailable"
+    )
+
+    assert fuzzy[0].runbook_id == "mysql-dependency-recovery-v1"
+    assert fuzzy[0].score_explanation.factors == {"semantic_similarity": 1.0}
+    assert baseline[0].runbook_id == "redis-dependency-recovery-v1"
+    assert baseline[0].score == 111
+
+
+def test_semantic_retriever_falls_back_when_embedding_service_is_unavailable(tmp_path):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    retriever = SemanticKnowledgeRetriever(store, store, FailedEmbeddings())
+
+    assert retriever.retrieve_runbooks(
+        "payment-service", "Redis unavailable", "Redis dependency is unavailable"
+    ) == store.retrieve_runbooks(
+        "payment-service", "Redis unavailable", "Redis dependency is unavailable"
+    )

@@ -215,6 +215,17 @@ class IncidentStore:
         ranked.sort(key=lambda item: (-item.score, item.runbook_id))
         return ranked[:limit]
 
+    def list_runbooks(self) -> list[RunbookMatch]:
+        """Return the enabled corpus for optional semantic ranking."""
+        with self.connection() as db:
+            rows = db.execute("SELECT * FROM runbooks WHERE enabled = 1 ORDER BY runbook_id").fetchall()
+        return [RunbookMatch(
+            runbook_id=row["runbook_id"], title=row["title"], service=row["service"],
+            root_cause=row["root_cause"], description=row["description"], command=row["command"],
+            verification=row["verification"], score=0,
+            score_explanation=RetrievalScore(total=0, factors={}),
+        ) for row in rows]
+
     def retrieve_incidents(self, incident: IncidentState, limit: int = 3) -> list[IncidentMatch]:
         """Return compact similar-incident summaries without recursively embedding snapshots."""
         with self.connection() as db:

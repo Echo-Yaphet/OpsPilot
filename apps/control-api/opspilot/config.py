@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     executor_gateway_token: str = "opspilot-local-executor-token"
     executor_gateway_timeout: float = 15
     database_path: str = "/data/opspilot.db"
+    embedding_base_url: str | None = None
+    embedding_model: str | None = None
+    embedding_api_key: str = ""
+    embedding_timeout: float = 10
+    semantic_minimum_similarity: float = 0.75
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
