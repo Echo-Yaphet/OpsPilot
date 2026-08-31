@@ -105,13 +105,27 @@ services:
       context: .
       dockerfile: apps/executor-gateway/Dockerfile
     environment:
-      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_PROXY_URL: http://docker-proxy:2375
+      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
       EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
       EXECUTOR_IDENTITY_MAX_TTL_SECONDS: ${EXECUTOR_IDENTITY_MAX_TTL_SECONDS:-15}
       EXECUTOR_DATABASE_PATH: /data/executor.db
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - executor-data:/data
+    networks: [opspilot, executor-runtime]
+    depends_on: [docker-proxy]
+
+  docker-proxy:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/docker-proxy/Dockerfile
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [executor-runtime]
 
   mysql:
     <<: *service-common
@@ -192,6 +206,8 @@ services:
 
 networks:
   opspilot: {}
+  executor-runtime:
+    internal: true
 
 volumes:
   mysql-data: {}

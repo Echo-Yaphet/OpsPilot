@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (short-lived gateway workload identity milestone)
+Last updated: 2026-08-31 (restricted Docker runtime proxy milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Short-lived, request-bound Gateway workload identity is complete. Continue with narrower Docker/API permissions or configurable per-service SLO verification while keeping the Redis incident flow green.
+4. The restricted Docker runtime proxy is complete. Continue with configurable per-service SLO verification while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -31,7 +31,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 
 ### Runtime and observability
 
-- Docker Compose monorepo with 13 services, including Alertmanager and a separate executor gateway.
+- Docker Compose monorepo with 14 services, including Alertmanager, a separate executor gateway, and an internal restricted Docker proxy.
 - Three FastAPI sample applications: `user-service`, `order-service`, and `payment-service`.
 - MySQL 8.4 and Redis 7.4 dependencies.
 - Prometheus scraping all three applications every five seconds.
@@ -63,8 +63,10 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - A typed `ExecutionAction` and `RestrictedExecutor` form a narrow gateway seam that exposes restart operations rather than arbitrary shell execution.
 - Policy allow and deny decisions are included in incident evidence and normalized into the SQLite `policy_decisions` audit table.
 - Policy approval does not replace human approval: medium-risk restart requires both `execute=true` and `approved=true` before the restricted executor is called.
-- The Docker socket is no longer mounted into the Control API. A separately deployed executor gateway owns Docker access and requires an internal Bearer identity.
+- The Docker socket is mounted only into an internal restricted proxy. Neither the Control API nor executor gateway has socket access.
 - The gateway accepts typed `restart_container` and `stop_container` requests only, applies operation-specific target allowlists, and never accepts shell commands.
+- The gateway image no longer contains the Docker SDK; it calls fixed status, restart, and stop proxy routes over a dedicated internal network.
+- The proxy has no host port, is not attached to the Control API network, independently enforces operation-specific target allowlists, and exposes no raw Docker API routes.
 - Gateway allow, deny, and failure outcomes are persisted independently in its `execution_audit` SQLite table and volume.
 - Gateway failures and timeouts produce `execution_failed` incidents and do not enter recovery verification.
 - Control API no longer transmits a reusable static Gateway token. It mints a new HMAC-signed workload credential for every Gateway request.
@@ -108,6 +110,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the restricted Docker runtime proxy milestone:
+
+- All 39 backend tests passed in the rebuilt Control API image, including restricted-proxy identity, fixed-route and target denials, proxy-failure auditing, plus every prior workflow, persistence, retrieval, gateway identity, and replay regression; the only warning remains the LangGraph dependency deprecation notice.
+- Compose validation passed and rebuilt Control API, executor gateway, and Docker proxy production images deployed successfully; all 14 services were running and final `make smoke` passed.
+- Runtime inspection confirmed that only `docker-proxy` mounts `/var/run/docker.sock`; Control API and Gateway have only their data volumes. The proxy has no host port, and Control API cannot resolve its name because it is absent from the dedicated internal network.
+- The Gateway image has no Docker SDK. Live proxy checks returned HTTP 401 without proxy identity, HTTP 404 for raw `/containers/json` and delete-style routes, and HTTP 200 for the fixed allowlisted status route.
+- Live Gateway checks returned HTTP 401 for missing, expired, wrong-audience, and claim-mismatched credentials, HTTP 403 for an authenticated unknown target, and HTTP 401 when replaying a credential whose first request returned HTTP 200.
+- A real Redis outage produced dependency metric `0`, RCA confidence `0.92`, no action in recommendation-only mode, and `awaiting_approval` while Redis remained exited when approval was missing. Explicit approval restarted Redis through the Gateway and restricted proxy, then deep Verification completed with container running, service healthy, dependency metric restored, `status=resolved`, and `verified=true`.
+- The independent Control API and Gateway SQLite stores both retained readable policy, execution, verification, allow, deny, workload subject, and credential-ID audit records.
 
 Latest verification for the short-lived gateway workload identity milestone:
 
@@ -264,6 +276,7 @@ Local entry points:
 - `apps/control-api/opspilot/tools.py`: Prometheus, Loki, and Docker tool seam.
 - `apps/control-api/opspilot/execution.py`: execution allowlist policy, typed action, and restricted executor boundary.
 - `apps/executor-gateway/app.py`: authenticated typed Docker operations, operation-specific allowlists, and independent execution audit storage.
+- `apps/docker-proxy/app.py`: internal fixed-route Docker runtime proxy and second target allowlist.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
 - `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, and query operations.
 - `apps/dashboard/app/page.tsx`: Dashboard behavior and UI.
@@ -281,7 +294,7 @@ Local entry points:
 - Verification now checks container state, application health, and dependency metrics, but uses fixed local thresholds rather than configurable SLO policies.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
-- The executor gateway still has broad Docker socket access. Short-lived, request-bound, replay-protected credentials replace the reusable token, but the local HMAC signing key is statically configured; production needs external workload identity/key rotation and a narrower Docker API proxy or equivalent runtime permissions.
+- The local HMAC signing key and Gateway-to-proxy token are statically configured. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs external workload identity/key rotation and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
@@ -327,6 +340,14 @@ Local entry points:
 - Correlated Gateway action audits with workload subject and credential ID while preserving the independent audit database.
 - Revalidated legacy-token, expiry, audience, claim mismatch, replay, allowlist, recommendation-only, missing-approval, and approved Redis recovery paths.
 
+### Completed: restricted Docker runtime proxy
+
+- Moved the Docker socket and Docker SDK out of the Gateway into a single-purpose internal proxy.
+- Exposed only authenticated, fixed container status, restart, and stop routes with an independent target allowlist; raw Docker API paths return 404.
+- Isolated the proxy on a non-published internal network shared only with the Gateway, so Control API cannot address it.
+- Preserved workload credentials, Gateway typed actions, policy and approval gates, Gateway audit persistence, and execution-failure routing.
+- Revalidated identity denials, replay denial, proxy denials, recommendation-only, missing approval, real Redis recovery, deep verification, and both audit stores.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -334,7 +355,6 @@ Local entry points:
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace the local signing key with externally issued workload identity and key rotation when moving beyond the local stack.
-- Narrow the gateway's Docker/API permissions with a restricted proxy or equivalent runtime boundary.
 - Generalize Verification Agent thresholds and time windows into per-service SLO policies.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
@@ -342,4 +362,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 13 services. Short-lived request-bound Gateway workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, bounded service verification, exact execution policy, and the separate executor gateway are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone: preferably narrower Docker/API permissions or configurable per-service SLO verification. Keep identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, deep verification, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 14 services. The restricted Docker proxy, socket-free Gateway, short-lived request-bound workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, bounded service verification, exact execution policy, and separate audit stores are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone, preferably configurable per-service SLO verification. Keep proxy isolation and fixed routes, identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, deep verification, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.

@@ -1,7 +1,5 @@
 import importlib.util
 import sqlite3
-import sys
-import types
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -11,8 +9,6 @@ from workload_identity import mint_identity
 def load_gateway(tmp_path, monkeypatch):
     monkeypatch.setenv("EXECUTOR_IDENTITY_KEY", "test-signing-key")
     monkeypatch.setenv("EXECUTOR_DATABASE_PATH", str(tmp_path / "executor.db"))
-    fake_docker = types.SimpleNamespace(DockerClient=lambda **kwargs: None)
-    monkeypatch.setitem(sys.modules, "docker", fake_docker)
     path = Path("/app/executor-gateway/app.py")
     if not path.exists():
         path = Path("apps/executor-gateway/app.py")
@@ -41,14 +37,12 @@ def credential(
     )
 
 
-class FakeContainer:
-    status = "running"
+async def successful_runtime_request(method, path):
+    return {"status": "running" if method == "GET" else "completed"}
 
-    def restart(self, timeout):
-        return None
 
-    def stop(self, timeout):
-        return None
+async def failed_runtime_request(method, path):
+    raise RuntimeError("restricted Docker proxy unavailable")
 
 
 def test_gateway_requires_identity_and_rejects_unknown_target(tmp_path, monkeypatch):
@@ -70,7 +64,7 @@ def test_gateway_requires_identity_and_rejects_unknown_target(tmp_path, monkeypa
 
 def test_gateway_executes_typed_allowlisted_action_and_audits(tmp_path, monkeypatch):
     module, client = load_gateway(tmp_path, monkeypatch)
-    monkeypatch.setattr(module, "container_for", lambda target: FakeContainer())
+    monkeypatch.setattr(module, "runtime_request", successful_runtime_request)
     response = client.post(
         "/v1/actions",
         json={"operation": "restart_container", "target": "redis"},
@@ -85,6 +79,23 @@ def test_gateway_executes_typed_allowlisted_action_and_audits(tmp_path, monkeypa
         consumed = db.execute("SELECT identity_subject FROM consumed_credentials").fetchone()
     assert row == ("restart_container", "redis", "allowed", "control-api", 1)
     assert consumed == ("control-api",)
+
+
+def test_gateway_audits_restricted_proxy_failure(tmp_path, monkeypatch):
+    module, client = load_gateway(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "runtime_request", failed_runtime_request)
+
+    response = client.post(
+        "/v1/actions",
+        json={"operation": "restart_container", "target": "redis"},
+        headers={"Authorization": f"Bearer {credential()}"},
+    )
+
+    assert response.status_code == 502
+    assert "restricted Docker proxy unavailable" in response.json()["detail"]
+    with sqlite3.connect(module.DATABASE_PATH) as db:
+        row = db.execute("SELECT outcome,detail FROM execution_audit").fetchone()
+    assert row == ("failed", "restricted Docker proxy unavailable")
 
 
 def test_gateway_rejects_expired_wrong_audience_and_mismatched_credentials(tmp_path, monkeypatch):
@@ -105,7 +116,7 @@ def test_gateway_rejects_expired_wrong_audience_and_mismatched_credentials(tmp_p
 
 def test_gateway_rejects_replayed_credential(tmp_path, monkeypatch):
     module, client = load_gateway(tmp_path, monkeypatch)
-    monkeypatch.setattr(module, "container_for", lambda target: FakeContainer())
+    monkeypatch.setattr(module, "runtime_request", successful_runtime_request)
     token = credential(credential_id="one-time-credential")
     request = {
         "json": {"operation": "restart_container", "target": "redis"},

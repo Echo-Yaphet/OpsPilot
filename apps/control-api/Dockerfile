@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY apps/control-api/opspilot ./opspilot
 COPY apps/shared-identity/workload_identity.py .
 COPY apps/executor-gateway ./executor-gateway
+COPY apps/docker-proxy ./docker-proxy
 COPY tests ./tests
 CMD ["uvicorn", "opspilot.main:app", "--host", "0.0.0.0", "--port", "8080"]

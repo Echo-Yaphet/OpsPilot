@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-import docker
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel
 from workload_identity import IdentityError, verify_identity
@@ -17,6 +17,9 @@ IDENTITY_ISSUER = os.getenv("EXECUTOR_IDENTITY_ISSUER", "opspilot-control-api")
 IDENTITY_AUDIENCE = os.getenv("EXECUTOR_IDENTITY_AUDIENCE", "opspilot-executor-gateway")
 IDENTITY_MAX_TTL_SECONDS = int(os.getenv("EXECUTOR_IDENTITY_MAX_TTL_SECONDS", "15"))
 DATABASE_PATH = os.getenv("EXECUTOR_DATABASE_PATH", "/data/executor.db")
+DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "http://docker-proxy:2375")
+DOCKER_PROXY_TOKEN = os.getenv("DOCKER_PROXY_TOKEN", "")
+DOCKER_PROXY_TIMEOUT = float(os.getenv("DOCKER_PROXY_TIMEOUT", "15"))
 
 
 class ActionRequest(BaseModel):
@@ -95,12 +98,19 @@ def authorize(request: Request, authorization: str | None = Header(None)) -> dic
         raise HTTPException(status_code=401, detail=f"invalid executor gateway identity: {exc}") from exc
 
 
-def container_for(target: str):
-    client = docker.DockerClient(base_url=os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock"))
-    matches = client.containers.list(all=True, filters={"label": f"com.docker.compose.service={target}"})
-    if not matches:
-        raise RuntimeError(f"container not found: {target}")
-    return matches[0]
+async def runtime_request(method: str, path: str) -> dict:
+    headers = {"Authorization": f"Bearer {DOCKER_PROXY_TOKEN}"}
+    async with httpx.AsyncClient(timeout=DOCKER_PROXY_TIMEOUT) as client:
+        response = await client.request(
+            method, f"{DOCKER_PROXY_URL.rstrip('/')}{path}", headers=headers,
+        )
+    if response.is_error:
+        try:
+            detail = response.json().get("detail", response.text)
+        except ValueError:
+            detail = response.text
+        raise RuntimeError(f"restricted Docker proxy rejected request: {detail}")
+    return response.json()
 
 
 app = FastAPI(title="OpsPilot Executor Gateway", version="0.1.0")
@@ -119,7 +129,8 @@ async def container_status(target: str, identity: dict = Depends(authorize)):
     if target not in RESTART_TARGETS | {"prometheus", "alertmanager", "loki"}:
         raise HTTPException(status_code=403, detail=f"status target is not allowlisted: {target}")
     try:
-        return {"target": target, "status": container_for(target).status}
+        payload = await runtime_request("GET", f"/v1/containers/{target}/status")
+        return {"target": target, "status": payload["status"]}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -136,12 +147,11 @@ async def execute(action: ActionRequest, identity: dict = Depends(authorize)):
         audit(action.operation, action.target, "denied", detail, identity)
         raise HTTPException(status_code=403, detail=detail)
     try:
-        container = container_for(action.target)
         if action.operation == "restart_container":
-            container.restart(timeout=10)
+            await runtime_request("POST", f"/v1/containers/{action.target}/restart")
             result = f"restarted {action.target}"
         else:
-            container.stop(timeout=10)
+            await runtime_request("POST", f"/v1/containers/{action.target}/stop")
             result = f"stopped {action.target}"
         audit(action.operation, action.target, "allowed", result, identity)
         return {"status": "completed", "result": result}

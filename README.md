@@ -4,7 +4,7 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 `故障注入 → Prometheus/Loki 取证 → RCA → 方案生成 → 安全审查 → 人工审批 → 执行 → 验证`
 
-当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。Docker socket 仅挂载到独立的 executor gateway，Control API 通过短期、一次性、请求绑定的 workload credential 调用类型化接口。
+当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。Docker socket 仅挂载到内部受限代理；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。
 
 ## 快速启动
 
@@ -60,7 +60,7 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> Docker socket 仅挂载到独立 executor gateway。网关只接受 `restart_container` 和故障演练所需的 `stop_container` 类型化操作，并对每种操作使用独立目标白名单。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定 issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。默认共享签名密钥仅适用于本地 MVP，生产环境仍应接入外部 workload identity、密钥轮换和更窄的 Docker/API 权限。
+> Docker socket 仅挂载到 `docker-proxy`。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的状态、restart 和 stop 路由；原始 Docker API 不可访问。Gateway 本身无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定 issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。默认共享签名密钥和代理 token 仅适用于本地 MVP，生产环境仍应接入外部 workload identity、密钥轮换以及操作系统级的运行时权限隔离。
 
 ## 其他故障场景
 
@@ -79,6 +79,7 @@ apps/
   dashboard/          实时运维控制台、故障演练与 Agent 时间线
   control-api/        FastAPI 控制面、状态模型、Agent 工作流、Tools
   executor-gateway/   独立执行边界、身份校验、操作白名单与审计
+  docker-proxy/       仅持有 socket 的受限容器运行时代理
   shared-service/     三个示例服务共享的最小实现
   user-service/       user-service 容器入口
   order-service/      order-service 容器入口
@@ -106,7 +107,7 @@ Prometheus、Loki 和 Alertmanager 取证现共享事故时间上下文。手动
 
 批准执行后，Verification Agent 会进行有界轮询，同时要求修复目标容器运行、受影响服务 `/health` 恢复、Prometheus 依赖指标恢复为 `1`。任一条件在时限内未恢复，incident 会进入 `verification_failed`，并在 evidence 中保留最后一次检查结果。
 
-Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject/credential ID 写入自己的持久化 SQLite 审计库。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
+Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject/credential ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 
 ## 事件与持久化 API
 
