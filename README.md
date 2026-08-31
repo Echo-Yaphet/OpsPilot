@@ -156,6 +156,32 @@ Compose 还会把 `infra/opspilot/verification-policies.json` 目录只读挂载
 
 每次 Verification 在开始时锁定一个不可变策略快照，避免热更新改变正在进行的恢复判定。无效 JSON、未知字段或违反约束的更新不会替换当前策略，而是继续使用最后一次有效版本。`GET /api/v1/verification-policy/status` 可查看当前来源、内容版本、已配置服务和最近一次加载错误；该接口只读，不提供未认证的策略写入能力。
 
+### 签名策略 bundle 与 revision 历史
+
+默认单节点本地模式继续兼容上述无签名 JSON。需要安全分发时，可显式启用严格签名模式：
+
+```bash
+VERIFICATION_POLICY_SIGNING_KEYS={"opspilot-policy-v1":"replace-with-a-secret"}
+VERIFICATION_POLICY_REQUIRE_SIGNATURE=true
+```
+
+严格模式下，策略文件必须是以下 bundle；`policy` 内部仍使用原有严格 schema：
+
+```json
+{
+  "key_id": "opspilot-policy-v1",
+  "revision": 42,
+  "content_digest": "sha256:<canonical-policy-sha256>",
+  "policy": {
+    "defaults": {"max_attempts": 8},
+    "services": {"payment-service": {"recovery_stable_checks": 2}}
+  },
+  "signature": "hmac-sha256:<signature>"
+}
+```
+
+摘要是对 `policy` 的 UTF-8 canonical JSON（key 排序、无多余空白）计算 SHA-256；HMAC-SHA256 签名覆盖同样 canonical 化的 `content_digest`、`key_id` 和整数 `revision`。内部 helper `create_signed_verification_policy_bundle()` 可供受信部署工具生成同一格式。未知 key、摘要不符、签名错误、schema 错误、低于已接受 revision 的回退，以及同 revision 不同摘要的冲突都会被拒绝；当前进程继续使用 last-known-good。已接受的签名 revision 会持久化，因此容器重启后仍不能回退。SQLite 历史只记录 revision、摘要、签名状态、加载结果和时间，不保存 key ID 或密钥材料。状态接口新增 `bundle_revision`、`content_digest`、`key_id`、`signature_status` 和 `signature_required`，仍保持只读。
+
 Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会按显式 key ID 选择当前或尚在重叠窗口内的上一验证 key，再验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject、credential ID 和 key ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 
 ## 事件与持久化 API

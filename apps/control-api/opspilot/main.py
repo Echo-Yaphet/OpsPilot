@@ -35,6 +35,9 @@ verification_policy_provider = VerificationPolicyProvider(
     settings.default_verification_policy(),
     settings.verification_service_policies,
     settings.verification_policy_file,
+    settings.verification_policy_signing_keys,
+    settings.verification_policy_require_signature,
+    store,
 )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,

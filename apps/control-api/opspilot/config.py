@@ -1,9 +1,10 @@
 import hashlib
+import hmac
 import json
 import re
 from pathlib import Path
 from threading import Lock
-from typing import Literal, Mapping
+from typing import Literal, Mapping, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -50,6 +51,63 @@ class VerificationPolicyDocument(BaseModel):
         return self
 
 
+class SignedVerificationPolicyBundle(BaseModel):
+    """Authenticated wrapper for a strictly validated policy document."""
+
+    key_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")
+    revision: int = Field(ge=1)
+    content_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    policy: dict
+    signature: str = Field(pattern=r"^hmac-sha256:[0-9a-f]{64}$")
+    model_config = ConfigDict(extra="forbid")
+
+
+class VerificationPolicyRevisionHistory(Protocol):
+    def record_verification_policy_revision(
+        self,
+        revision: int | None,
+        content_digest: str,
+        signature_status: str,
+        load_result: str,
+    ) -> None: ...
+
+    def latest_accepted_verification_policy_revision(self) -> tuple[int, str] | None: ...
+
+
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def verification_policy_content_digest(policy: object) -> str:
+    return f"sha256:{hashlib.sha256(_canonical_json(policy)).hexdigest()}"
+
+
+def verification_policy_signature(
+    key_id: str, revision: int, content_digest: str, key: str
+) -> str:
+    signed = _canonical_json({
+        "content_digest": content_digest,
+        "key_id": key_id,
+        "revision": revision,
+    })
+    return f"hmac-sha256:{hmac.new(key.encode(), signed, hashlib.sha256).hexdigest()}"
+
+
+def create_signed_verification_policy_bundle(
+    policy: dict, key_id: str, revision: int, key: str
+) -> dict:
+    """Create a canonical HMAC bundle for local tooling and tests."""
+    content_digest = verification_policy_content_digest(policy)
+    bundle = {
+        "key_id": key_id,
+        "revision": revision,
+        "content_digest": content_digest,
+        "policy": policy,
+        "signature": verification_policy_signature(key_id, revision, content_digest, key),
+    }
+    return SignedVerificationPolicyBundle.model_validate(bundle).model_dump()
+
+
 class VerificationPolicyProvider:
     """Content-addressed policy reload with an immutable last-known-good snapshot."""
 
@@ -58,15 +116,25 @@ class VerificationPolicyProvider:
         default: VerificationPolicy,
         service_overrides: Mapping[str, VerificationPolicyOverride] | None = None,
         path: str | None = None,
+        signing_keys: Mapping[str, str] | None = None,
+        require_signature: bool = False,
+        revision_history: VerificationPolicyRevisionHistory | None = None,
     ):
         self._base_default = default
         self._base_overrides = dict(service_overrides or {})
         self._path = Path(path) if path else None
+        self._signing_keys = dict(signing_keys or {})
+        self._require_signature = require_signature
+        self._revision_history = revision_history
         self._lock = Lock()
         self._default = default
         self._policies = self._merge_services(default, self._base_overrides)
         self._observed_digest: str | None = None
         self._revision = "environment"
+        self._bundle_revision: int | None = None
+        self._content_digest: str | None = None
+        self._key_id: str | None = None
+        self._signature_status = "environment"
         self._last_error: str | None = None
         self._reload_if_changed()
 
@@ -99,8 +167,62 @@ class VerificationPolicyProvider:
             if digest == self._observed_digest:
                 return
             self._observed_digest = digest
+        revision: int | None = None
+        history_digest = f"sha256:{digest}"
+        signature_status = "unsigned"
         try:
-            document = VerificationPolicyDocument.model_validate(json.loads(content))
+            raw = json.loads(content)
+            signed_fields = {"key_id", "revision", "content_digest", "policy", "signature"}
+            is_bundle = isinstance(raw, dict) and bool(signed_fields.intersection(raw))
+            if is_bundle:
+                raw_revision = raw.get("revision")
+                if (
+                    isinstance(raw_revision, int)
+                    and not isinstance(raw_revision, bool)
+                    and raw_revision >= 1
+                ):
+                    revision = raw_revision
+                raw_digest = raw.get("content_digest")
+                if isinstance(raw_digest, str) and re.fullmatch(
+                    r"sha256:[0-9a-f]{64}", raw_digest
+                ):
+                    history_digest = raw_digest
+                bundle = SignedVerificationPolicyBundle.model_validate(raw)
+                revision = bundle.revision
+                history_digest = bundle.content_digest
+                actual_digest = verification_policy_content_digest(bundle.policy)
+                if not hmac.compare_digest(actual_digest, bundle.content_digest):
+                    signature_status = "invalid_digest"
+                    raise ValueError("signed policy content digest does not match policy content")
+                key = self._signing_keys.get(bundle.key_id)
+                if key is None:
+                    signature_status = "unknown_key"
+                    raise ValueError(f"unknown verification policy signing key ID: {bundle.key_id}")
+                expected = verification_policy_signature(
+                    bundle.key_id, bundle.revision, bundle.content_digest, key
+                )
+                if not hmac.compare_digest(expected, bundle.signature):
+                    signature_status = "invalid_signature"
+                    raise ValueError("invalid verification policy bundle signature")
+                signature_status = "valid"
+                document = VerificationPolicyDocument.model_validate(bundle.policy)
+                accepted = (
+                    self._revision_history.latest_accepted_verification_policy_revision()
+                    if self._revision_history else None
+                )
+                if accepted and bundle.revision < accepted[0]:
+                    raise ValueError(
+                        f"verification policy revision rollback rejected: {bundle.revision} < {accepted[0]}"
+                    )
+                if accepted and bundle.revision == accepted[0] and bundle.content_digest != accepted[1]:
+                    raise ValueError(
+                        f"verification policy revision {bundle.revision} conflicts with the accepted digest"
+                    )
+            else:
+                if self._require_signature:
+                    signature_status = "required"
+                    raise ValueError("signed verification policy bundle is required")
+                document = VerificationPolicyDocument.model_validate(raw)
             effective_default = self._merge(self._base_default, document.defaults)
             combined = dict(self._base_overrides)
             for service, override in document.services.items():
@@ -113,12 +235,24 @@ class VerificationPolicyProvider:
         except Exception as exc:
             with self._lock:
                 self._last_error = f"invalid policy file: {exc}"
+            if self._revision_history:
+                self._revision_history.record_verification_policy_revision(
+                    revision, history_digest, signature_status, "rejected"
+                )
             return
         with self._lock:
             self._default = effective_default
             self._policies = policies
-            self._revision = digest[:12]
+            self._revision = str(revision) if revision is not None else digest[:12]
+            self._bundle_revision = revision
+            self._content_digest = history_digest
+            self._key_id = bundle.key_id if revision is not None else None
+            self._signature_status = signature_status
             self._last_error = None
+        if self._revision_history:
+            self._revision_history.record_verification_policy_revision(
+                revision, history_digest, signature_status, "accepted"
+            )
 
     def policy_for(self, service: str) -> VerificationPolicy:
         self._reload_if_changed()
@@ -131,6 +265,11 @@ class VerificationPolicyProvider:
             return {
                 "source": str(self._path) if self._path else "environment",
                 "revision": self._revision,
+                "bundle_revision": self._bundle_revision,
+                "content_digest": self._content_digest,
+                "key_id": self._key_id,
+                "signature_status": self._signature_status,
+                "signature_required": self._require_signature,
                 "last_error": self._last_error,
                 "services": sorted(self._policies),
             }
@@ -161,6 +300,8 @@ class Settings(BaseSettings):
     verification_recovery_stable_checks: int = Field(default=1, ge=1, le=60)
     verification_service_policies: dict[str, VerificationPolicyOverride] = Field(default_factory=dict)
     verification_policy_file: str | None = None
+    verification_policy_signing_keys: dict[str, str] = Field(default_factory=dict)
+    verification_policy_require_signature: bool = False
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @model_validator(mode="after")
@@ -176,6 +317,13 @@ class Settings(BaseSettings):
             if not service.strip():
                 raise ValueError("verification service policy names must not be empty")
             self._merge_verification_policy(default, override)
+        for key_id, key in self.verification_policy_signing_keys.items():
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", key_id):
+                raise ValueError("verification policy signing key IDs must be 1-64 safe characters")
+            if not key:
+                raise ValueError("verification policy signing keys must not be empty")
+        if self.verification_policy_require_signature and not self.verification_policy_signing_keys:
+            raise ValueError("signature-required verification policy mode needs at least one signing key")
         return self
 
     def default_verification_policy(self) -> VerificationPolicy:

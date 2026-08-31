@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (Gateway workload identity key rotation milestone)
+Last updated: 2026-08-31 (signed Verification SLO policy bundle milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Safe Gateway workload identity key rotation is complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Signed Verification SLO policy bundles and durable revision history are complete. Continue with coordinated multi-node policy distribution while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -59,6 +59,9 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Incident list and detail APIs restore complete `IncidentState` data after Control API restart.
 - Verification Agent performs bounded recovery polling after approved execution and uses validated default plus per-service SLO policies for maximum attempts, interval, service health condition, dependency metric threshold, and consecutive stable checks.
 - A centrally mounted, strict JSON policy document can hot-reload default and per-service SLO overrides without recreating Control API. Reload is content-addressed, retains the last-known-good snapshot after read/parse/validation failures, and exposes read-only status.
+- The same file seam optionally accepts HMAC-SHA256 signed policy bundles with an explicit signing key ID, canonical content digest, positive monotonic revision, and signature. Strict signed mode is opt-in so the default single-node unsigned file remains compatible.
+- Signed loading rejects unknown keys, digest/content tampering, invalid signatures, strict-schema failures, revision rollback, and same-revision digest conflicts without replacing the in-process last-known-good policy.
+- Accepted signed revisions persist in SQLite, so rollback protection survives Control API recreation. Revision history stores only revision, digest, signature status, load result, and observation time; key IDs and key material are not persisted there.
 - Each recovery resolves exactly one immutable SLO snapshot before polling, so a concurrent policy update cannot change an incident's verification semantics midway through its attempt budget.
 - The unconfigured policy preserves the original six attempts, two-second interval, healthy service, dependency metric value `1`, and one successful check behavior; partial per-service overrides fall back to those defaults.
 - Verification results retain the original evidence fields and add the effective policy, current stable count, and required stable count without changing `IncidentState` or HTTP schemas.
@@ -117,6 +120,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the signed Verification SLO policy bundle milestone:
+
+- All 69 backend tests passed in the rebuilt Control API image; new coverage verifies valid signed loading, strict-mode compatibility, digest tampering, unknown key IDs, invalid signatures, signed schema failure, persistent revision rollback protection, environment fallback, last-known-good retention, and minimal revision-history fields. The only warning remains the LangGraph dependency deprecation notice.
+- Compose validation passed and the rebuilt Control API image deployed. The default mounted unsigned JSON remained healthy in compatibility mode; strict mode was then enabled with a one-key trusted keyring without adding a policy mutation API.
+- A tampered bundle at strict-mode startup was rejected and fell back to the environment defaults. Valid revision 101 then hot-loaded without recreation. Subsequent content tampering, an unknown key, signed revision 100 rollback, and a correctly signed revision 102 with an invalid schema were all rejected while revision 101 remained the last-known-good snapshot.
+- Live SQLite inspection showed accepted and rejected loads with only revision, content digest, signature status, load result, and time. The trusted key and key ID were not written to revision history.
+- A real Redis outage retained `dependency_up=0`, RCA confidence `0.92`, recommendation-only non-execution, and missing-approval blocking while Redis remained stopped. Approved recovery restarted Redis through the Gateway and Proxy and reached `resolved`, `verified=true` on check three under the signed eight-attempt policy only after two consecutive stable checks.
+- Live Gateway identity returned 200 once and 401 on replay; missing identity returned 401 and an authenticated unknown target returned 403. Proxy missing identity returned 401, its fixed status route returned 200, unknown target returned 403, and raw/delete-style routes returned 404. Control API could not resolve the Proxy and only the Proxy mounted the Docker socket.
+- With the Proxy deliberately unavailable, an approved request entered `execution_failed`, retained `verified=null`, and did not enter recovery polling. The Proxy and default unsigned compatibility policy were restored afterward; Redis, MySQL, payment-service, and the Control API were healthy.
 
 Latest verification for the Gateway workload identity key rotation milestone:
 
@@ -326,7 +339,7 @@ Local entry points:
 - LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
-- Policy distribution is a local read-only mounted JSON file with per-process last-known-good state; multi-node distribution, signed policy bundles, coordinated rollout, and durable revision history are not yet implemented.
+- Policy authenticity and durable monotonic revision history are implemented for the local read-only file seam, but coordinated multi-node distribution, quorum/rollout health, and cross-node convergence are not yet implemented.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
@@ -404,6 +417,13 @@ Local entry points:
 - Added a read-only reload status endpoint without introducing an unauthenticated mutation API.
 - Revalidated strict-budget failure, invalid-update fallback, consecutive-stability recovery, recommendation-only, approval blocking, identity/replay/proxy denials, socket ownership, and network isolation against the live stack.
 
+### Completed: signed SLO policy bundles and durable revision history
+
+- Added an explicit key ID, monotonic revision, canonical policy digest, and HMAC-SHA256 signature wrapper around the existing strict policy document.
+- Added opt-in strict signature enforcement with a trusted keyring while preserving the default local unsigned compatibility mode, environment fallback, hot reload, and immutable per-recovery snapshots.
+- Persisted minimal accepted/rejected revision history without key material, and enforced rollback plus same-revision conflict rejection across Control API restarts.
+- Revalidated valid signed load, tampering, unknown key, invalid signature, schema rejection, rollback, last-known-good, environment fallback, recommendation-only, approval blocking, approved Redis recovery, Gateway replay, Proxy fixed routes, network isolation, and execution-failure routing.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -411,7 +431,7 @@ Local entry points:
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
-- Add signed policy bundles, durable revision history, and coordinated multi-node distribution if the local file-backed policy manager moves beyond the single-node stack.
+- Add coordinated authenticated multi-node distribution, rollout health, and convergence reporting if the file-backed policy manager moves beyond the single-node stack.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
 ## Handoff prompt

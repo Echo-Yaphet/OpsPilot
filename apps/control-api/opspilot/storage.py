@@ -77,8 +77,39 @@ class IncidentStore:
                     verification TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS verification_policy_revisions (
+                    id INTEGER PRIMARY KEY, revision INTEGER, content_digest TEXT NOT NULL,
+                    signature_status TEXT NOT NULL, load_result TEXT NOT NULL,
+                    observed_at TEXT NOT NULL
+                );
             """)
             self._seed_runbooks(db)
+
+    def record_verification_policy_revision(
+        self,
+        revision: int | None,
+        content_digest: str,
+        signature_status: str,
+        load_result: str,
+    ) -> None:
+        with self.connection() as db:
+            db.execute(
+                """INSERT INTO verification_policy_revisions(
+                    revision, content_digest, signature_status, load_result, observed_at
+                ) VALUES(?,?,?,?,?)""",
+                (revision, content_digest, signature_status, load_result,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+
+    def latest_accepted_verification_policy_revision(self) -> tuple[int, str] | None:
+        with self.connection() as db:
+            row = db.execute(
+                """SELECT revision, content_digest FROM verification_policy_revisions
+                   WHERE revision IS NOT NULL AND signature_status = 'valid'
+                     AND load_result = 'accepted'
+                   ORDER BY revision DESC, id DESC LIMIT 1"""
+            ).fetchone()
+        return (row["revision"], row["content_digest"]) if row else None
 
     def _seed_runbooks(self, db):
         now = datetime.now(timezone.utc).isoformat()
