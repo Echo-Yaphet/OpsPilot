@@ -105,7 +105,23 @@ RCA 完成初步判断后会通过独立的知识检索 seam 查询 SQLite 中�
 
 Prometheus、Loki 和 Alertmanager 取证现共享事故时间上下文。手动分析以请求开始时间为锚点；Alertmanager firing 事件使用原始 `startsAt`。Prometheus 查询锚定事故时刻，Loki 只查询事故前两分钟至后五分钟（不超过当前时间）的窗口，减少十分钟滚动窗口内旧错误的干扰。关联范围、来源、查询模式和结果数量写入新增的 `incident_context` evidence；原有 Prometheus/Loki evidence 数据格式、`IncidentState` 和 HTTP schema 保持不变。指标仍优先于日志完成 Redis/MySQL RCA。
 
-批准执行后，Verification Agent 会进行有界轮询，同时要求修复目标容器运行、受影响服务 `/health` 恢复、Prometheus 依赖指标恢复为 `1`。任一条件在时限内未恢复，incident 会进入 `verification_failed`，并在 evidence 中保留最后一次检查结果。
+批准执行后，Verification Agent 会进行有界轮询，同时要求修复目标容器运行、受影响服务健康条件满足、Prometheus 依赖指标达到阈值，并连续稳定指定次数。任一条件在时限内未稳定，incident 会进入 `verification_failed`，并在原有 verification evidence 字段之外记录生效策略、当前连续稳定次数和要求的稳定次数。
+
+恢复 SLO 可通过环境变量配置；未配置时仍保持原有的 6 次检查、2 秒间隔、`healthy` 健康条件、指标阈值 `1` 和单次稳定即成功：
+
+```bash
+VERIFICATION_MAX_ATTEMPTS=6
+VERIFICATION_CHECK_INTERVAL_SECONDS=2
+VERIFICATION_SERVICE_HEALTH_CONDITION=healthy # healthy 或 status_ok
+VERIFICATION_DEPENDENCY_METRIC_THRESHOLD=1
+VERIFICATION_RECOVERY_STABLE_CHECKS=1
+```
+
+`VERIFICATION_SERVICE_POLICIES` 接受 JSON 格式的按服务部分覆盖，未出现的字段和服务自动回退到上述默认策略。所有次数、间隔、健康条件、阈值以及“稳定次数不得超过最大尝试次数”等约束都会在 Control API 启动时校验。例如：
+
+```bash
+VERIFICATION_SERVICE_POLICIES={"payment-service":{"max_attempts":8,"recovery_stable_checks":2}}
+```
 
 Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject/credential ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 

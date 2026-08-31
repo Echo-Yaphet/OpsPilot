@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from opspilot.models import AnalyzeRequest
+from opspilot.config import VerificationPolicy
 from opspilot.execution import ExecutionPolicy
 from opspilot.tools import OpsTools
 from opspilot.workflow import IncidentWorkflow
@@ -45,6 +46,28 @@ class InconclusiveTools(FakeTools):
 class FailedVerificationTools(FakeTools):
     async def container_status(self, service):
         return "exited"
+
+
+class SequencedVerificationTools(FakeTools):
+    def __init__(self, recovered_sequence):
+        self.recovered_sequence = iter(recovered_sequence)
+        self.current_recovered = False
+
+    async def container_status(self, service):
+        self.current_recovered = next(self.recovered_sequence)
+        return "running" if self.current_recovered else "exited"
+
+    async def service_health(self, service):
+        return {
+            "healthy": self.current_recovered,
+            "detail": {"status": "ok" if self.current_recovered else "degraded"},
+        }
+
+    async def query_metric(self, query):
+        if "dependency_up" not in query or not self.restarted:
+            return await super().query_metric(query)
+        value = "0.95" if self.current_recovered else "0"
+        return [{"metric": {"dependency": "redis"}, "value": [1, value]}]
 
 
 class HealthyMetricsWithStaleLogsTools(FakeTools):
@@ -169,6 +192,63 @@ async def test_verification_failure_is_reported():
     verification = next(item for item in state.evidence if item.source == "verification")
     assert verification.data["attempts"] == 2
     assert verification.data["container_status"] == "exited"
+
+
+@pytest.mark.asyncio
+async def test_service_policy_requires_consecutive_stable_checks_before_resolution():
+    tools = SequencedVerificationTools([True, False, True, True])
+    policy = VerificationPolicy(
+        max_attempts=4,
+        check_interval_seconds=0,
+        service_health_condition="status_ok",
+        dependency_metric_threshold=0.9,
+        recovery_stable_checks=2,
+    )
+    state = await IncidentWorkflow(
+        tools, verification_policies={"payment-service": policy}
+    ).run(AnalyzeRequest(execute=True, approved=True))
+
+    assert state.status == "resolved"
+    verification = next(item for item in state.evidence if item.source == "verification")
+    assert verification.data["attempts"] == 4
+    assert verification.data["stable_checks"] == 2
+    assert verification.data["required_stable_checks"] == 2
+    assert verification.data["policy"]["dependency_metric_threshold"] == 0.9
+
+
+@pytest.mark.asyncio
+async def test_service_policy_fails_when_recovery_never_stabilizes_within_budget():
+    tools = SequencedVerificationTools([True, False, True])
+    policy = VerificationPolicy(
+        max_attempts=3,
+        check_interval_seconds=0,
+        dependency_metric_threshold=0.9,
+        recovery_stable_checks=2,
+    )
+    state = await IncidentWorkflow(
+        tools, verification_policies={"payment-service": policy}
+    ).run(AnalyzeRequest(execute=True, approved=True))
+
+    assert state.status == "verification_failed"
+    verification = next(item for item in state.evidence if item.source == "verification")
+    assert verification.data["attempts"] == 3
+    assert verification.data["stable_checks"] == 1
+    assert verification.data["required_stable_checks"] == 2
+
+
+@pytest.mark.asyncio
+async def test_unknown_service_uses_default_verification_policy():
+    policy = VerificationPolicy(max_attempts=2, check_interval_seconds=0)
+    workflow = IncidentWorkflow(
+        FailedVerificationTools(), default_verification_policy=policy,
+        verification_policies={"order-service": VerificationPolicy(max_attempts=4)},
+    )
+
+    result = await workflow._poll_recovery("payment-service", "redis")
+
+    assert result["verified"] is False
+    assert result["attempts"] == 2
+    assert result["policy"]["max_attempts"] == 2
 
 
 @pytest.mark.asyncio

@@ -1,10 +1,11 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Literal, TypedDict
+from typing import Literal, Mapping, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from .config import VerificationPolicy
 from .execution import ExecutionPolicy, Executor, PolicyDecision, RestrictedExecutor
 from .knowledge import KnowledgeRetriever, NoopKnowledgeRetriever
 from .models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
@@ -34,10 +35,19 @@ class IncidentWorkflow:
         execution_policy: ExecutionPolicy | None = None,
         executor: Executor | None = None,
         knowledge_retriever: KnowledgeRetriever | None = None,
+        verification_policies: Mapping[str, VerificationPolicy] | None = None,
+        default_verification_policy: VerificationPolicy | None = None,
     ):
         self.tools = tools
+        # Keep the original constructor knobs compatible while moving runtime
+        # configuration to validated per-service policies.
         self.verification_attempts = verification_attempts
         self.verification_interval = verification_interval
+        self.default_verification_policy = default_verification_policy or VerificationPolicy(
+            max_attempts=verification_attempts,
+            check_interval_seconds=verification_interval,
+        )
+        self.verification_policies = dict(verification_policies or {})
         self.execution_policy = execution_policy or ExecutionPolicy()
         self.executor = executor or RestrictedExecutor(tools)
         self.knowledge_retriever = knowledge_retriever or NoopKnowledgeRetriever()
@@ -291,35 +301,52 @@ class IncidentWorkflow:
 
     async def _poll_recovery(self, service: str, target: str) -> dict:
         """Require the repaired container, service health, and dependency metric to recover."""
+        policy = self.verification_policies.get(service, self.default_verification_policy)
         last = {"container_status": "unknown", "service_healthy": False, "dependency_up": False}
-        for attempt in range(1, self.verification_attempts + 1):
+        stable_checks = 0
+        for attempt in range(1, policy.max_attempts + 1):
             try:
                 last["container_status"] = await self.tools.container_status(target)
                 health = await self.tools.service_health(service)
-                last["service_healthy"] = bool(health.get("healthy"))
+                if policy.service_health_condition == "status_ok":
+                    last["service_healthy"] = health.get("detail", {}).get("status") == "ok"
+                else:
+                    last["service_healthy"] = bool(health.get("healthy"))
                 dependency_filter = f',dependency="{target}"' if target in ("redis", "mysql") else ""
                 metrics = await self.tools.query_metric(
                     f'dependency_up{{service="{service}"{dependency_filter}}}'
                 )
                 last["dependency_up"] = bool(metrics) and all(
-                    float(item.get("value", [0, 0])[1]) == 1 for item in metrics
+                    float(item.get("value", [0, 0])[1]) >= policy.dependency_metric_threshold
+                    for item in metrics
                 )
             except Exception as exc:
                 last["error"] = str(exc)
-            if all((
+            recovered = all((
                 last["container_status"] == "running",
                 last["service_healthy"],
                 last["dependency_up"],
-            )):
+            ))
+            stable_checks = stable_checks + 1 if recovered else 0
+            if stable_checks >= policy.recovery_stable_checks:
                 return {
                     **last, "verified": True, "attempts": attempt,
-                    "message": f"Service health and {target} dependency metric recovered after {attempt} check(s)",
+                    "stable_checks": stable_checks,
+                    "required_stable_checks": policy.recovery_stable_checks,
+                    "policy": policy.model_dump(mode="json"),
+                    "message": (
+                        f"Service health and {target} dependency metric were stable for "
+                        f"{stable_checks} check(s) after {attempt} total check(s)"
+                    ),
                 }
-            if attempt < self.verification_attempts:
-                await asyncio.sleep(self.verification_interval)
+            if attempt < policy.max_attempts:
+                await asyncio.sleep(policy.check_interval_seconds)
         return {
-            **last, "verified": False, "attempts": self.verification_attempts,
-            "message": f"Recovery verification timed out after {self.verification_attempts} check(s)",
+            **last, "verified": False, "attempts": policy.max_attempts,
+            "stable_checks": stable_checks,
+            "required_stable_checks": policy.recovery_stable_checks,
+            "policy": policy.model_dump(mode="json"),
+            "message": f"Recovery verification timed out after {policy.max_attempts} check(s)",
         }
 
     def _route_after_verification(self, graph_state: WorkflowState) -> Literal["resolved", "failed", "not_executed"]:
