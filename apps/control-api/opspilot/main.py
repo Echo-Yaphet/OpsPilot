@@ -11,6 +11,7 @@ from .config import VerificationPolicyProvider, settings
 from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
+from .policy_distribution import VerificationPolicyRolloutReporter
 from .storage import IncidentStore
 from .tools import LiveOpsTools
 from .workflow import IncidentWorkflow
@@ -38,6 +39,12 @@ verification_policy_provider = VerificationPolicyProvider(
     settings.verification_policy_signing_keys,
     settings.verification_policy_require_signature,
     store,
+    settings.verification_policy_source(),
+)
+verification_policy_rollout_reporter = VerificationPolicyRolloutReporter(
+    settings.verification_policy_node_id,
+    settings.verification_policy_rollout_nodes,
+    settings.verification_policy_rollout_timeout,
 )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,
@@ -70,6 +77,12 @@ async def health():
 async def verification_policy_status():
     """Expose reload health without allowing unauthenticated policy mutation."""
     return verification_policy_provider.status()
+
+
+@app.get("/api/v1/verification-policy/rollout")
+async def verification_policy_rollout():
+    """Report read-only multi-node policy health and convergence."""
+    return await verification_policy_rollout_reporter.report(verification_policy_provider.status())
 
 
 @app.post("/api/v1/incidents/analyze", response_model=IncidentState)

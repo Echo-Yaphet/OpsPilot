@@ -104,11 +104,65 @@ services:
       VERIFICATION_POLICY_FILE: /etc/opspilot/verification-policies.json
       VERIFICATION_POLICY_SIGNING_KEYS: '${VERIFICATION_POLICY_SIGNING_KEYS:-{}}'
       VERIFICATION_POLICY_REQUIRE_SIGNATURE: ${VERIFICATION_POLICY_REQUIRE_SIGNATURE:-false}
+      VERIFICATION_POLICY_DISTRIBUTION_URL: ${VERIFICATION_POLICY_DISTRIBUTION_URL:-}
+      VERIFICATION_POLICY_DISTRIBUTION_TOKEN: ${VERIFICATION_POLICY_DISTRIBUTION_TOKEN:-}
+      VERIFICATION_POLICY_DISTRIBUTION_TIMEOUT: ${VERIFICATION_POLICY_DISTRIBUTION_TIMEOUT:-2}
+      VERIFICATION_POLICY_DISTRIBUTION_POLL_INTERVAL: ${VERIFICATION_POLICY_DISTRIBUTION_POLL_INTERVAL:-2}
+      VERIFICATION_POLICY_NODE_ID: ${VERIFICATION_POLICY_NODE_ID:-control-api}
+      VERIFICATION_POLICY_ROLLOUT_NODES: '${VERIFICATION_POLICY_ROLLOUT_NODES:-{}}'
+      VERIFICATION_POLICY_ROLLOUT_TIMEOUT: ${VERIFICATION_POLICY_ROLLOUT_TIMEOUT:-2}
     ports: ["8080:8080"]
     volumes:
       - control-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
     depends_on: [prometheus, loki, alertmanager, executor-gateway]
+
+  policy-distributor:
+    <<: *service-common
+    profiles: [policy-rollout]
+    build:
+      context: .
+      dockerfile: apps/policy-distributor/Dockerfile
+    environment:
+      VERIFICATION_POLICY_BUNDLE_FILE: /policy/bundle.json
+      VERIFICATION_POLICY_DISTRIBUTION_TOKEN: ${VERIFICATION_POLICY_DISTRIBUTION_TOKEN:-opspilot-local-policy-distribution-token}
+    volumes:
+      - ./infra/opspilot/verification-policy-distribution.json:/policy/bundle.json:ro
+
+  control-api-canary:
+    <<: *service-common
+    profiles: [policy-rollout]
+    build:
+      context: .
+      dockerfile: apps/control-api/Dockerfile
+    environment:
+      PROMETHEUS_URL: http://prometheus:9090
+      LOKI_URL: http://loki:3100
+      DATABASE_PATH: /data/opspilot.db
+      EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
+      EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
+      EXECUTOR_IDENTITY_KEY_ID: ${EXECUTOR_IDENTITY_KEY_ID:-control-api-v1}
+      EXECUTOR_IDENTITY_TTL_SECONDS: ${EXECUTOR_IDENTITY_TTL_SECONDS:-10}
+      VERIFICATION_MAX_ATTEMPTS: ${VERIFICATION_MAX_ATTEMPTS:-6}
+      VERIFICATION_CHECK_INTERVAL_SECONDS: ${VERIFICATION_CHECK_INTERVAL_SECONDS:-2}
+      VERIFICATION_SERVICE_HEALTH_CONDITION: ${VERIFICATION_SERVICE_HEALTH_CONDITION:-healthy}
+      VERIFICATION_DEPENDENCY_METRIC_THRESHOLD: ${VERIFICATION_DEPENDENCY_METRIC_THRESHOLD:-1}
+      VERIFICATION_RECOVERY_STABLE_CHECKS: ${VERIFICATION_RECOVERY_STABLE_CHECKS:-1}
+      VERIFICATION_SERVICE_POLICIES: '${VERIFICATION_SERVICE_POLICIES:-{}}'
+      VERIFICATION_POLICY_FILE: /etc/opspilot/verification-policies.json
+      VERIFICATION_POLICY_SIGNING_KEYS: '${VERIFICATION_POLICY_SIGNING_KEYS:-{}}'
+      VERIFICATION_POLICY_REQUIRE_SIGNATURE: ${VERIFICATION_POLICY_REQUIRE_SIGNATURE:-false}
+      VERIFICATION_POLICY_DISTRIBUTION_URL: ${VERIFICATION_POLICY_DISTRIBUTION_URL:-}
+      VERIFICATION_POLICY_DISTRIBUTION_TOKEN: ${VERIFICATION_POLICY_DISTRIBUTION_TOKEN:-}
+      VERIFICATION_POLICY_DISTRIBUTION_TIMEOUT: ${VERIFICATION_POLICY_DISTRIBUTION_TIMEOUT:-2}
+      VERIFICATION_POLICY_DISTRIBUTION_POLL_INTERVAL: ${VERIFICATION_POLICY_DISTRIBUTION_POLL_INTERVAL:-2}
+      VERIFICATION_POLICY_NODE_ID: control-api-canary
+      VERIFICATION_POLICY_ROLLOUT_NODES: '{}'
+      VERIFICATION_POLICY_ROLLOUT_TIMEOUT: ${VERIFICATION_POLICY_ROLLOUT_TIMEOUT:-2}
+    volumes:
+      - control-canary-data:/data
+      - ./infra/opspilot:/etc/opspilot:ro
+    depends_on: [prometheus, loki, alertmanager, executor-gateway, policy-distributor]
 
   executor-gateway:
     <<: *service-common
@@ -232,4 +286,5 @@ volumes:
   loki-data: {}
   alertmanager-data: {}
   control-data: {}
+  control-canary-data: {}
   executor-data: {}

@@ -9,6 +9,8 @@ from typing import Literal, Mapping, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .policy_distribution import AuthenticatedPolicySource, PolicyContentSource
+
 
 class VerificationPolicy(BaseModel):
     """Validated recovery SLO used by the Verification Agent."""
@@ -119,6 +121,7 @@ class VerificationPolicyProvider:
         signing_keys: Mapping[str, str] | None = None,
         require_signature: bool = False,
         revision_history: VerificationPolicyRevisionHistory | None = None,
+        source: PolicyContentSource | None = None,
     ):
         self._base_default = default
         self._base_overrides = dict(service_overrides or {})
@@ -126,6 +129,7 @@ class VerificationPolicyProvider:
         self._signing_keys = dict(signing_keys or {})
         self._require_signature = require_signature
         self._revision_history = revision_history
+        self._source = source
         self._lock = Lock()
         self._default = default
         self._policies = self._merge_services(default, self._base_overrides)
@@ -135,6 +139,9 @@ class VerificationPolicyProvider:
         self._content_digest: str | None = None
         self._key_id: str | None = None
         self._signature_status = "environment"
+        self._observed_bundle_revision: int | None = None
+        self._observed_content_digest: str | None = None
+        self._load_result = "environment"
         self._last_error: str | None = None
         self._reload_if_changed()
 
@@ -154,13 +161,14 @@ class VerificationPolicyProvider:
         return {service: cls._merge(default, override) for service, override in overrides.items()}
 
     def _reload_if_changed(self) -> None:
-        if self._path is None:
+        if self._path is None and self._source is None:
             return
         try:
-            content = self._path.read_bytes()
+            content = self._source.read_bytes() if self._source else self._path.read_bytes()
         except OSError as exc:
             with self._lock:
                 self._last_error = f"unable to read policy file: {exc}"
+                self._load_result = "source_error"
             return
         digest = hashlib.sha256(content).hexdigest()
         with self._lock:
@@ -190,6 +198,9 @@ class VerificationPolicyProvider:
                 bundle = SignedVerificationPolicyBundle.model_validate(raw)
                 revision = bundle.revision
                 history_digest = bundle.content_digest
+                with self._lock:
+                    self._observed_bundle_revision = revision
+                    self._observed_content_digest = history_digest
                 actual_digest = verification_policy_content_digest(bundle.policy)
                 if not hmac.compare_digest(actual_digest, bundle.content_digest):
                     signature_status = "invalid_digest"
@@ -235,6 +246,9 @@ class VerificationPolicyProvider:
         except Exception as exc:
             with self._lock:
                 self._last_error = f"invalid policy file: {exc}"
+                self._observed_bundle_revision = revision
+                self._observed_content_digest = history_digest
+                self._load_result = "rejected"
             if self._revision_history:
                 self._revision_history.record_verification_policy_revision(
                     revision, history_digest, signature_status, "rejected"
@@ -249,6 +263,11 @@ class VerificationPolicyProvider:
             self._key_id = bundle.key_id if revision is not None else None
             self._signature_status = signature_status
             self._last_error = None
+            self._observed_bundle_revision = revision
+            self._observed_content_digest = history_digest
+            self._load_result = "accepted"
+        if self._source:
+            self._source.accept(content)
         if self._revision_history:
             self._revision_history.record_verification_policy_revision(
                 revision, history_digest, signature_status, "accepted"
@@ -263,7 +282,10 @@ class VerificationPolicyProvider:
         self._reload_if_changed()
         with self._lock:
             return {
-                "source": str(self._path) if self._path else "environment",
+                "source": (
+                    self._source.status()["url"] if self._source
+                    else str(self._path) if self._path else "environment"
+                ),
                 "revision": self._revision,
                 "bundle_revision": self._bundle_revision,
                 "content_digest": self._content_digest,
@@ -271,7 +293,11 @@ class VerificationPolicyProvider:
                 "signature_status": self._signature_status,
                 "signature_required": self._require_signature,
                 "last_error": self._last_error,
+                "observed_bundle_revision": self._observed_bundle_revision,
+                "observed_content_digest": self._observed_content_digest,
+                "load_result": self._load_result,
                 "services": sorted(self._policies),
+                "distribution": self._source.status() if self._source else {"mode": "local_file"},
             }
 
 
@@ -302,6 +328,14 @@ class Settings(BaseSettings):
     verification_policy_file: str | None = None
     verification_policy_signing_keys: dict[str, str] = Field(default_factory=dict)
     verification_policy_require_signature: bool = False
+    verification_policy_distribution_url: str | None = None
+    verification_policy_distribution_token: str = ""
+    verification_policy_cache_file: str = "/data/verification-policy-cache.json"
+    verification_policy_distribution_timeout: float = Field(default=2, gt=0, le=30)
+    verification_policy_distribution_poll_interval: float = Field(default=2, ge=0, le=300)
+    verification_policy_node_id: str = "control-api"
+    verification_policy_rollout_nodes: dict[str, str] = Field(default_factory=dict)
+    verification_policy_rollout_timeout: float = Field(default=2, gt=0, le=30)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @model_validator(mode="after")
@@ -324,7 +358,29 @@ class Settings(BaseSettings):
                 raise ValueError("verification policy signing keys must not be empty")
         if self.verification_policy_require_signature and not self.verification_policy_signing_keys:
             raise ValueError("signature-required verification policy mode needs at least one signing key")
+        if self.verification_policy_distribution_url:
+            if not self.verification_policy_distribution_token:
+                raise ValueError("verification policy distribution needs an authentication token")
+            if not self.verification_policy_require_signature:
+                raise ValueError("distributed verification policies must require signatures")
+        elif self.verification_policy_distribution_token:
+            raise ValueError("verification policy distribution URL is required with a token")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.verification_policy_node_id):
+            raise ValueError("verification policy node ID must be 1-64 safe characters")
+        if any(not node.strip() or not url.strip() for node, url in self.verification_policy_rollout_nodes.items()):
+            raise ValueError("verification policy rollout nodes need nonempty IDs and URLs")
         return self
+
+    def verification_policy_source(self) -> AuthenticatedPolicySource | None:
+        if not self.verification_policy_distribution_url:
+            return None
+        return AuthenticatedPolicySource(
+            self.verification_policy_distribution_url,
+            self.verification_policy_distribution_token,
+            self.verification_policy_cache_file,
+            self.verification_policy_distribution_timeout,
+            self.verification_policy_distribution_poll_interval,
+        )
 
     def default_verification_policy(self) -> VerificationPolicy:
         return VerificationPolicy(

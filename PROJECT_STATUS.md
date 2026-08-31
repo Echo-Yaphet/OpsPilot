@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (signed Verification SLO policy bundle milestone)
+Last updated: 2026-08-31 (authenticated multi-node Verification policy rollout milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Signed Verification SLO policy bundles and durable revision history are complete. Continue with coordinated multi-node policy distribution while keeping the Redis incident flow green.
+4. Authenticated multi-node Verification policy distribution, accepted-only node caches, rollout health, and convergence reporting are complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -62,6 +62,11 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - The same file seam optionally accepts HMAC-SHA256 signed policy bundles with an explicit signing key ID, canonical content digest, positive monotonic revision, and signature. Strict signed mode is opt-in so the default single-node unsigned file remains compatible.
 - Signed loading rejects unknown keys, digest/content tampering, invalid signatures, strict-schema failures, revision rollback, and same-revision digest conflicts without replacing the in-process last-known-good policy.
 - Accepted signed revisions persist in SQLite, so rollback protection survives Control API recreation. Revision history stores only revision, digest, signature status, load result, and observation time; key IDs and key material are not persisted there.
+- An optional read-only policy distributor serves bundles only to authenticated Bearer clients; it exposes no policy mutation route and has no host port in the rollout profile.
+- Each Control API node independently fetches, verifies, validates, and applies a distributed signed bundle. Only accepted bytes replace that node's durable cache, so invalid updates and distributor partitions preserve its last-known-good bundle across process restarts.
+- The local file path remains the default and does not depend on the distributor. Remote distribution is opt-in, requires strict signature mode plus an authentication token, and does not block default single-node startup.
+- Policy status distinguishes observed from accepted revision/digest and reports accepted, rejected, or source-error load results plus distributor/cache health.
+- `GET /api/v1/verification-policy/rollout` aggregates configured node status without mutating policy, reports offline nodes and the highest observed revision, and distinguishes cross-node convergence from rollout health.
 - Each recovery resolves exactly one immutable SLO snapshot before polling, so a concurrent policy update cannot change an incident's verification semantics midway through its attempt budget.
 - The unconfigured policy preserves the original six attempts, two-second interval, healthy service, dependency metric value `1`, and one successful check behavior; partial per-service overrides fall back to those defaults.
 - Verification results retain the original evidence fields and add the effective policy, current stable count, and required stable count without changing `IncidentState` or HTTP schemas.
@@ -120,6 +125,17 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the authenticated multi-node Verification policy rollout milestone:
+
+- All 75 backend tests passed in the rebuilt Control API image. New coverage verifies authenticated distribution, complete signed-mode configuration, accepted-only caching, tamper rejection without cache replacement, restart recovery during a partition, convergence, and offline-node reporting. The only warning remains the LangGraph dependency deprecation notice.
+- Compose validation passed. A profile-scoped distributor and an independent canary Control API with its own SQLite volume deployed alongside the primary; both independently accepted signed revision 103, digest `sha256:c9795ef4e22fda109477ff79aa8ff256afca90a47abdc81a7d6af0aec00f9999`, and reported `converged=true` for two online nodes.
+- Distributor requests without identity and with the wrong Bearer token returned 401; the valid identity returned 200. Content tampering, an unknown key at revision 104, signed revision 100 rollback, and a correctly signed revision 104 with an invalid schema were rejected by both nodes while accepted revision 103 remained their last-known-good.
+- Stopping the canary produced one of two online nodes and `converged=false`. Stopping the distributor left both nodes on revision 103; the canary then restarted while the distributor remained offline and recovered revision 103 from its accepted-only durable cache.
+- The default unsigned local-file configuration was restored after acceptance. The profile-scoped canary and distributor were removed, the rebuilt primary was deployed, `/health` passed, and policy status returned unsigned local-file mode with no load error.
+- A real Redis outage retained `dependency_up=0`, RCA confidence `0.92`, recommendation-only non-execution, and missing-approval blocking. Approved recovery restarted Redis through the Gateway and Proxy and reached `resolved`, `verified=true` on check four under the distributed eight-attempt/two-stable-check policy.
+- Live Gateway checks returned 401 without identity, 200 once and 401 on replay, and 403 for an authenticated unknown target. Proxy checks returned 401/200/403/404/404 for missing identity, fixed status, unknown target, raw Docker, and delete-style routes. Only the Proxy mounted the Docker socket, and Control API could not resolve it.
+- With the Proxy unavailable, an approved Redis request entered `execution_failed`, retained `verified=null`, and produced no Verification evidence. Proxy, Redis, payment-service, and the default unsigned policy were healthy afterward.
 
 Latest verification for the signed Verification SLO policy bundle milestone:
 
@@ -262,6 +278,7 @@ These results were observed against the running local system, not inferred from 
 - `GET /health`
 - `GET /api/v1/system/status`
 - `GET /api/v1/verification-policy/status`
+- `GET /api/v1/verification-policy/rollout`
 - `POST /api/v1/incidents/analyze`
 - `GET /api/v1/incidents`
 - `GET /api/v1/incidents/{incident_id}`
@@ -327,6 +344,8 @@ Local entry points:
 - `apps/docker-proxy/app.py`: internal fixed-route Docker runtime proxy and second target allowlist.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
 - `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, and query operations.
+- `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, and multi-node rollout reporter.
+- `apps/policy-distributor/app.py`: authenticated read-only bundle endpoint used by the optional rollout profile.
 - `apps/dashboard/app/page.tsx`: Dashboard behavior and UI.
 - `apps/dashboard/app/globals.css`: Dashboard visual system.
 - `apps/shared-service/app.py`: shared sample-application implementation.
@@ -339,7 +358,7 @@ Local entry points:
 - LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
-- Policy authenticity and durable monotonic revision history are implemented for the local read-only file seam, but coordinated multi-node distribution, quorum/rollout health, and cross-node convergence are not yet implemented.
+- Authenticated pull distribution, per-node validation/cache fallback, and configured-node convergence reporting are implemented. The reporter is observational rather than a quorum/consensus system, peer status remains read-only but unauthenticated like the existing local status endpoint, and SQLite incident storage still prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
@@ -424,6 +443,14 @@ Local entry points:
 - Persisted minimal accepted/rejected revision history without key material, and enforced rollback plus same-revision conflict rejection across Control API restarts.
 - Revalidated valid signed load, tampering, unknown key, invalid signature, schema rejection, rollback, last-known-good, environment fallback, recommendation-only, approval blocking, approved Redis recovery, Gateway replay, Proxy fixed routes, network isolation, and execution-failure routing.
 
+### Completed: authenticated multi-node policy rollout
+
+- Added a profile-scoped, read-only policy distributor that requires Bearer identity and never accepts policy writes.
+- Added opt-in authenticated pull distribution; every Control API node still independently validates signature, digest, schema, monotonic revision, and immutable Verification snapshots.
+- Added accepted-only durable node caches so invalid content never replaces restart-safe last-known-good state and distributor partitions do not block verification.
+- Added observed/accepted revision and load-result status plus a read-only multi-node rollout endpoint that separates convergence, rollout health, and offline nodes.
+- Revalidated two-node convergence, tamper/unknown-key/rollback/schema rejection, canary and distributor outages, cache restart recovery, default local-file fallback, the real Redis recovery loop, and all Gateway/Proxy isolation boundaries.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -431,11 +458,11 @@ Local entry points:
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
-- Add coordinated authenticated multi-node distribution, rollout health, and convergence reporting if the file-backed policy manager moves beyond the single-node stack.
+- If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add authenticated peer status plus an external rollout controller or quorum model.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 14 services. Safe workload identity key rotation with explicit key IDs and bounded current/previous overlap, file-backed SLO policy hot reload with immutable per-recovery snapshots and last-known-good fallback, configurable per-service verification, the restricted Docker proxy, socket-free Gateway, short-lived request-bound workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone. Keep key-ID selection/rotation validation/overlap expiry, hot-reload validation/status/last-known-good behavior, SLO fallback and consecutive stability, proxy isolation and fixed routes, identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 14 services; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. Signed policy bundles, durable rollback protection, authenticated pull distribution, accepted-only node caches, observed/accepted status, and multi-node convergence reporting are complete. Safe workload identity key rotation, immutable per-recovery snapshots, configurable verification, the restricted Docker proxy, socket-free Gateway, request-bound credentials with replay prevention, incident-time correlation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Implement one next production-safety milestone. Revalidate distribution authentication, signature/schema/revision rejection, cache fallback, convergence/offline reporting, default local-file mode, Gateway/Proxy boundaries, recommendation-only, missing approval, execution failure, approved Redis recovery, retrieval fallbacks, and both audit stores. Run `make test`, rebuild affected images, run `make smoke`, perform live acceptance, and update `PROJECT_STATUS.md` before declaring completion.

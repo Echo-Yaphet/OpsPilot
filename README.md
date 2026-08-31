@@ -182,6 +182,24 @@ VERIFICATION_POLICY_REQUIRE_SIGNATURE=true
 
 摘要是对 `policy` 的 UTF-8 canonical JSON（key 排序、无多余空白）计算 SHA-256；HMAC-SHA256 签名覆盖同样 canonical 化的 `content_digest`、`key_id` 和整数 `revision`。内部 helper `create_signed_verification_policy_bundle()` 可供受信部署工具生成同一格式。未知 key、摘要不符、签名错误、schema 错误、低于已接受 revision 的回退，以及同 revision 不同摘要的冲突都会被拒绝；当前进程继续使用 last-known-good。已接受的签名 revision 会持久化，因此容器重启后仍不能回退。SQLite 历史只记录 revision、摘要、签名状态、加载结果和时间，不保存 key ID 或密钥材料。状态接口新增 `bundle_revision`、`content_digest`、`key_id`、`signature_status` 和 `signature_required`，仍保持只读。
 
+### 认证多节点分发与收敛报告
+
+默认配置仍直接读取本地只读文件，不依赖任何协调服务。需要渐进式多节点 rollout 时，先把受信部署工具生成的签名 bundle 原子写入 `infra/opspilot/verification-policy-distribution.json`，再显式启用严格签名和认证分发：
+
+```bash
+VERIFICATION_POLICY_SIGNING_KEYS='{"opspilot-policy-v1":"replace-with-signing-secret"}' \
+VERIFICATION_POLICY_REQUIRE_SIGNATURE=true \
+VERIFICATION_POLICY_DISTRIBUTION_URL=http://policy-distributor:8070/bundle \
+VERIFICATION_POLICY_DISTRIBUTION_TOKEN=replace-with-distribution-token \
+VERIFICATION_POLICY_NODE_ID=control-api-primary \
+VERIFICATION_POLICY_ROLLOUT_NODES='{"control-api-canary":"http://control-api-canary:8080"}' \
+docker compose --profile policy-rollout up -d --build
+```
+
+分发服务只有带 Bearer 身份的 `GET /bundle`，没有策略写入 API，也不映射宿主端口。每个 Control API 节点独立完成 key ID、HMAC、digest、严格 schema 和单调 revision 校验；只有接受成功的 bytes 才会原子更新该节点 `/data/verification-policy-cache.json`。篡改或无效更新不会覆盖缓存，分发服务离线或节点重启时继续使用本节点 last-known-good。未配置远端 URL 时，这些组件不会影响默认单节点启动。
+
+`GET /api/v1/verification-policy/status` 现在同时显示 observed 与 accepted revision/digest、加载结果、分发连通性和缓存状态。`GET /api/v1/verification-policy/rollout` 只读聚合配置节点，分别报告 `converged`（节点是否接受同一版本）与 `healthy`（收敛且分发源未降级）、在线节点数和离线节点详情；它不是策略写入面或分布式共识系统。
+
 Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会按显式 key ID 选择当前或尚在重叠窗口内的上一验证 key，再验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject、credential ID 和 key ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 
 ## 事件与持久化 API
