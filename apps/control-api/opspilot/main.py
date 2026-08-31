@@ -33,8 +33,12 @@ if settings.embedding_base_url and settings.embedding_model:
     )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,
-    settings.executor_gateway_token,
+    settings.executor_identity_key,
     settings.executor_gateway_timeout,
+    settings.executor_identity_issuer,
+    settings.executor_identity_audience,
+    settings.executor_identity_subject,
+    settings.executor_identity_ttl_seconds,
 ), knowledge_retriever=knowledge_retriever)
 app.add_middleware(
     CORSMiddleware,

@@ -87,7 +87,8 @@ services:
       LOKI_URL: http://loki:3100
       DATABASE_PATH: /data/opspilot.db
       EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
-      EXECUTOR_GATEWAY_TOKEN: opspilot-local-executor-token
+      EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
+      EXECUTOR_IDENTITY_TTL_SECONDS: ${EXECUTOR_IDENTITY_TTL_SECONDS:-10}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
@@ -105,7 +106,8 @@ services:
       dockerfile: apps/executor-gateway/Dockerfile
     environment:
       DOCKER_HOST: unix:///var/run/docker.sock
-      EXECUTOR_GATEWAY_TOKEN: opspilot-local-executor-token
+      EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
+      EXECUTOR_IDENTITY_MAX_TTL_SECONDS: ${EXECUTOR_IDENTITY_MAX_TTL_SECONDS:-15}
       EXECUTOR_DATABASE_PATH: /data/executor.db
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (incident-time evidence correlation milestone)
+Last updated: 2026-08-31 (short-lived gateway workload identity milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Incident-time evidence correlation and the expanded retrieval evaluation set are complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Short-lived, request-bound Gateway workload identity is complete. Continue with narrower Docker/API permissions or configurable per-service SLO verification while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -67,6 +67,10 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - The gateway accepts typed `restart_container` and `stop_container` requests only, applies operation-specific target allowlists, and never accepts shell commands.
 - Gateway allow, deny, and failure outcomes are persisted independently in its `execution_audit` SQLite table and volume.
 - Gateway failures and timeouts produce `execution_failed` incidents and do not enter recovery verification.
+- Control API no longer transmits a reusable static Gateway token. It mints a new HMAC-signed workload credential for every Gateway request.
+- Workload credentials have a bounded lifetime and carry issuer, audience, subject, issued/expiry times, unique `jti`, HTTP method/path, operation, and target claims.
+- Gateway rejects expired, wrong-audience, request/action-mismatched, and replayed credentials before Docker access.
+- Consumed credential IDs are persisted atomically in the independent Gateway SQLite store; action audits include workload subject and credential ID.
 - A replaceable `KnowledgeRetriever` seam supplies deterministic SQLite-backed runbook and historical-incident retrieval without changing `IncidentState` or public HTTP responses.
 - SQLite is migrated in place with a `runbooks` table and three idempotently seeded runbooks for Redis, MySQL, and inconclusive service degradation.
 - RCA retrieves exact-root-cause runbooks plus compact same-service/same-root-cause incident summaries and records both as `runbook` and `incident_history` evidence.
@@ -104,6 +108,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the short-lived gateway workload identity milestone:
+
+- All 36 backend tests passed in the rebuilt Control API image, including missing identity, expiry, wrong audience, action/target binding, replay denial, target allowlisting, successful typed execution, and all prior workflow/retrieval regressions.
+- Compose configuration validation passed; rebuilt Control API and executor gateway production images were deployed successfully; all 13 services were running and final `make smoke` passed.
+- A legacy reusable static Bearer token returned HTTP 401. A valid short-lived credential for an unknown target returned HTTP 403, and replaying that exact credential returned HTTP 401.
+- A real Redis outage with `checkout cache cannot be reached` produced Redis metric `0`, RCA confidence `0.92`, and no execution in recommendation-only mode; missing approval remained `awaiting_approval`.
+- Explicit approval restarted Redis through a newly minted workload credential and deep Verification resolved on check two with `status=resolved` and `verified=true`.
+- The latest Gateway allow and deny audits contained `identity_subject=control-api` and a credential ID; consumed credential IDs persisted independently. The running Control API had neither the legacy token environment variable nor a Docker socket.
 
 Latest verification for the incident-time evidence correlation milestone:
 
@@ -268,7 +281,7 @@ Local entry points:
 - Verification now checks container state, application health, and dependency metrics, but uses fixed local thresholds rather than configurable SLO policies.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
-- The executor gateway still has broad Docker socket access. It has a separate deployment, operation/target allowlists, a shared internal identity, and independent audit records, but production needs short-lived workload identity and a narrower Docker API proxy or equivalent runtime permissions.
+- The executor gateway still has broad Docker socket access. Short-lived, request-bound, replay-protected credentials replace the reusable token, but the local HMAC signing key is statically configured; production needs external workload identity/key rotation and a narrower Docker API proxy or equivalent runtime permissions.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
@@ -306,13 +319,22 @@ Local entry points:
 - Added explicit execution failure/timeout routing that skips Verification.
 - Revalidated recommendation-only, missing-approval, policy-denial, approved Redis recovery, deep verification, and smoke paths.
 
+### Completed: short-lived gateway workload identity
+
+- Replaced the reusable static Bearer token with per-request HMAC workload credentials capped at a short lifetime.
+- Bound every credential to issuer, audience, subject, request method/path, typed operation, and target.
+- Added atomic, persistent one-time `jti` consumption so captured credentials cannot be replayed.
+- Correlated Gateway action audits with workload subject and credential ID while preserving the independent audit database.
+- Revalidated legacy-token, expiry, audience, claim mismatch, replay, allowlist, recommendation-only, missing-approval, and approved Redis recovery paths.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
-- Replace the local shared gateway token with short-lived workload identity and narrow the gateway's Docker/API permissions.
+- Replace the local signing key with externally issued workload identity and key rotation when moving beyond the local stack.
+- Narrow the gateway's Docker/API permissions with a restricted proxy or equivalent runtime boundary.
 - Generalize Verification Agent thresholds and time windows into per-service SLO policies.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
@@ -320,4 +342,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 13 services. Incident-time Prometheus/Loki/Alertmanager evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, bounded service verification, exact execution policy, and the separate authenticated executor gateway are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone: preferably short-lived gateway workload identity, narrower Docker/API permissions, or configurable per-service SLO verification. Keep recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, deep verification, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 13 services. Short-lived request-bound Gateway workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, bounded service verification, exact execution policy, and the separate executor gateway are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone: preferably narrower Docker/API permissions or configurable per-service SLO verification. Keep identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, deep verification, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.

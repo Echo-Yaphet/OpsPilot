@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from workload_identity import mint_identity
 
 from .config import Settings
 
@@ -67,7 +68,20 @@ class LiveOpsTools(OpsTools):
         return [line for stream in streams for _, line in stream.get("values", [])]
 
     async def _gateway(self, method: str, path: str, json: dict | None = None) -> dict:
-        headers = {"Authorization": f"Bearer {self.settings.executor_gateway_token}"}
+        operation = json["operation"] if json else "container_status"
+        target = json["target"] if json else path.removeprefix("/v1/containers/").removesuffix("/status")
+        credential = mint_identity(
+            self.settings.executor_identity_key,
+            issuer=self.settings.executor_identity_issuer,
+            audience=self.settings.executor_identity_audience,
+            subject=self.settings.executor_identity_subject,
+            ttl_seconds=self.settings.executor_identity_ttl_seconds,
+            method=method,
+            path=path,
+            operation=operation,
+            target=target,
+        )
+        headers = {"Authorization": f"Bearer {credential}"}
         async with httpx.AsyncClient(timeout=self.settings.executor_gateway_timeout) as client:
             response = await client.request(
                 method, f"{self.settings.executor_gateway_url.rstrip('/')}{path}", json=json, headers=headers,
