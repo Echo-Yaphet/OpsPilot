@@ -4,14 +4,18 @@ import json
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from workload_identity import IdentityError
 
 from .config import VerificationPolicyProvider, settings
 from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
-from .policy_distribution import VerificationPolicyRolloutReporter
+from .policy_distribution import (
+    VerificationPolicyPeerAuthenticator,
+    VerificationPolicyRolloutReporter,
+)
 from .storage import IncidentStore
 from .tools import LiveOpsTools
 from .workflow import IncidentWorkflow
@@ -42,9 +46,24 @@ verification_policy_provider = VerificationPolicyProvider(
     settings.verification_policy_source(),
 )
 verification_policy_rollout_reporter = VerificationPolicyRolloutReporter(
-    settings.verification_policy_node_id,
-    settings.verification_policy_rollout_nodes,
-    settings.verification_policy_rollout_timeout,
+    node_id=settings.verification_policy_node_id,
+    peers=settings.verification_policy_rollout_nodes,
+    timeout=settings.verification_policy_rollout_timeout,
+    max_concurrency=settings.verification_policy_rollout_max_concurrency,
+    identity_key=settings.verification_policy_peer_identity_key,
+    identity_key_id=settings.verification_policy_peer_identity_key_id,
+    identity_issuer=settings.verification_policy_peer_identity_issuer,
+    identity_audience=settings.verification_policy_peer_identity_audience,
+    identity_ttl_seconds=settings.verification_policy_peer_identity_ttl_seconds,
+)
+verification_policy_peer_authenticator = VerificationPolicyPeerAuthenticator(
+    node_id=settings.verification_policy_node_id,
+    identity_key=settings.verification_policy_peer_identity_key,
+    identity_key_id=settings.verification_policy_peer_identity_key_id,
+    identity_issuer=settings.verification_policy_peer_identity_issuer,
+    identity_audience=settings.verification_policy_peer_identity_audience,
+    maximum_ttl_seconds=settings.verification_policy_peer_identity_ttl_seconds,
+    consume=store.consume_verification_policy_peer_credential,
 )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,
@@ -76,6 +95,16 @@ async def health():
 @app.get("/api/v1/verification-policy/status")
 async def verification_policy_status():
     """Expose reload health without allowing unauthenticated policy mutation."""
+    return verification_policy_provider.status()
+
+
+@app.get("/api/v1/verification-policy/peer-status")
+async def verification_policy_peer_status(authorization: str | None = Header(default=None)):
+    """Expose the same read-only status to authenticated peer fan-out only."""
+    try:
+        verification_policy_peer_authenticator.verify(authorization)
+    except IdentityError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
     return verification_policy_provider.status()
 
 

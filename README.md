@@ -193,12 +193,15 @@ VERIFICATION_POLICY_DISTRIBUTION_URL=http://policy-distributor:8070/bundle \
 VERIFICATION_POLICY_DISTRIBUTION_TOKEN=replace-with-distribution-token \
 VERIFICATION_POLICY_NODE_ID=control-api-primary \
 VERIFICATION_POLICY_ROLLOUT_NODES='{"control-api-canary":"http://control-api-canary:8080"}' \
+VERIFICATION_POLICY_PEER_IDENTITY_KEY=replace-with-peer-signing-secret \
 docker compose --profile policy-rollout up -d --build
 ```
 
 分发服务只有带 Bearer 身份的 `GET /bundle`，没有策略写入 API，也不映射宿主端口。每个 Control API 节点独立完成 key ID、HMAC、digest、严格 schema 和单调 revision 校验；只有接受成功的 bytes 才会原子更新该节点 `/data/verification-policy-cache.json`。篡改或无效更新不会覆盖缓存，分发服务离线或节点重启时继续使用本节点 last-known-good。未配置远端 URL 时，这些组件不会影响默认单节点启动。
 
-`GET /api/v1/verification-policy/status` 现在同时显示 observed 与 accepted revision/digest、加载结果、分发连通性和缓存状态。`GET /api/v1/verification-policy/rollout` 只读聚合配置节点，分别报告 `converged`（节点是否接受同一版本）与 `healthy`（收敛且分发源未降级）、在线节点数和离线节点详情；它不是策略写入面或分布式共识系统。
+本地兼容接口 `GET /api/v1/verification-policy/status` 保持无需身份且只读。节点 fan-out 不再访问该接口，而是为每个目标即时签发最长 10 秒的 HMAC credential，绑定 key ID、issuer/audience、来源节点、`jti`、`GET`、peer-status 路径、读取操作和目标节点 ID；目标节点在自己的 SQLite 中原子消费 `jti`，重启后仍拒绝重放。内部 peer-status 端点缺失、错误、过期、请求不匹配或已消费的 credential 均返回 401。共享 peer key 仍只是本地 MVP 默认值，生产应替换为外部 workload identity。
+
+`GET /api/v1/verification-policy/status` 同时显示 observed 与 accepted revision/digest、加载结果、分发连通性和缓存状态。`GET /api/v1/verification-policy/rollout` 使用 `VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY`（默认 4，范围 1–32）限制并行 peer 查询，并受 `VERIFICATION_POLICY_ROLLOUT_TIMEOUT` 约束；一个节点超时或离线不会丢弃其他节点结果。响应明确给出 `desired` revision/digest，以及 `rollout_state=converged|degraded|stalled|inactive`：全部节点接受 desired 且来源正常为 `converged`，peer 或分发源部分失败为 `degraded`，节点均在线但无法接受 desired 为 `stalled`，默认未启用签名 rollout 的单节点为 `inactive`。原有 `converged`、`healthy`、在线节点数和节点详情字段仍保留；该接口不是策略写入面或分布式共识系统。
 
 Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会按显式 key ID 选择当前或尚在重叠窗口内的上一验证 key，再验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject、credential ID 和 key ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 

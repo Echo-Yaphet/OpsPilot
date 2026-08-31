@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (authenticated multi-node Verification policy rollout milestone)
+Last updated: 2026-09-01 (authenticated peer rollout control-plane hardening milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Authenticated multi-node Verification policy distribution, accepted-only node caches, rollout health, and convergence reporting are complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Authenticated peer status, replay-safe node identity, bounded parallel fan-out, partial-failure reporting, and explicit rollout states are complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -66,7 +66,9 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Each Control API node independently fetches, verifies, validates, and applies a distributed signed bundle. Only accepted bytes replace that node's durable cache, so invalid updates and distributor partitions preserve its last-known-good bundle across process restarts.
 - The local file path remains the default and does not depend on the distributor. Remote distribution is opt-in, requires strict signature mode plus an authentication token, and does not block default single-node startup.
 - Policy status distinguishes observed from accepted revision/digest and reports accepted, rejected, or source-error load results plus distributor/cache health.
-- `GET /api/v1/verification-policy/rollout` aggregates configured node status without mutating policy, reports offline nodes and the highest observed revision, and distinguishes cross-node convergence from rollout health.
+- The existing local `GET /api/v1/verification-policy/status` remains unauthenticated and read-only for compatibility. Peer fan-out uses a separate authenticated read-only endpoint with fresh HMAC credentials bound to source, target node, method, path, operation, expiry, and one-time `jti`.
+- Peer credential IDs are atomically consumed in each node's SQLite store, so replay is rejected across Control API restarts. Missing, malformed, expired, wrong-target, wrong-path, and replayed credentials fail before policy status is returned.
+- `GET /api/v1/verification-policy/rollout` uses bounded parallel peer queries with per-request timeout, retains successful node results during partial failure, exposes desired revision/digest, and distinguishes `converged`, `degraded`, `stalled`, and default-local `inactive` states without mutating policy.
 - Each recovery resolves exactly one immutable SLO snapshot before polling, so a concurrent policy update cannot change an incident's verification semantics midway through its attempt budget.
 - The unconfigured policy preserves the original six attempts, two-second interval, healthy service, dependency metric value `1`, and one successful check behavior; partial per-service overrides fall back to those defaults.
 - Verification results retain the original evidence fields and add the effective policy, current stable count, and required stable count without changing `IncidentState` or HTTP schemas.
@@ -125,6 +127,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the authenticated peer rollout control-plane hardening milestone:
+
+- The rebuilt Control API and canary images passed all 83 backend tests. New coverage verifies short-lived request/path/operation/target binding, missing identity, overlong lifetime rejection, durable one-time `jti` consumption across node restart, bounded fan-out concurrency, deterministic node ordering, partial-result retention, and `converged`/`degraded`/`stalled` semantics. The only warning remains the existing LangGraph dependency deprecation notice.
+- Compose validation passed. The default 14-service stack was healthy before and after acceptance, Redis/MySQL were healthy, and final `make smoke` passed. Default unsigned local-file mode was restored with no load error; the local public status endpoint remained 200 while the internal peer endpoint returned 401 without identity.
+- A profile-scoped primary and canary independently accepted signed revision 104 with digest `sha256:c9795ef4e22fda109477ff79aa8ff256afca90a47abdc81a7d6af0aec00f9999`. Authenticated fan-out reported `rollout_state=converged`, `healthy=true`, and two of two online nodes. The persistent primary database's highest accepted signed revision is now 104; future strict signed acceptance must use a revision greater than 104.
+- Peer status returned 401 without identity, 200 for a valid request-bound credential, 401 on replay, and 401 for a wrong target. The existing local status route remained 200 without authentication on both primary and canary.
+- An online canary using an unknown policy signing key observed revision 104 but rejected it; the primary reported `stalled` rather than convergence. Stopping the canary retained the primary result and reported `degraded`, one of two online. Stopping the distributor kept both nodes converged on accepted-only revision 104 caches while reporting `degraded`; distributor and canary recovery returned the rollout to healthy convergence.
+- A real Redis outage produced dependency metric `0`, RCA confidence `0.92`, recommendation-only non-execution, and `awaiting_approval` with Redis still stopped. Approved recovery restarted Redis through the Gateway and Proxy and reached `resolved`, `verified=true` after two stable checks on verification attempt five under the immutable revision 104 policy.
+- Live Gateway checks returned 401 without identity, 200 once, 401 on replay, and 403 for an authenticated unknown target. Proxy checks returned 401/200/403/404/404 for missing identity, fixed status, unknown target, raw Docker, and delete-style routes. Only the Proxy owned the Docker socket, and Control API could not resolve the Proxy network.
 
 Latest verification for the authenticated multi-node Verification policy rollout milestone:
 
@@ -279,6 +291,7 @@ These results were observed against the running local system, not inferred from 
 - `GET /health`
 - `GET /api/v1/system/status`
 - `GET /api/v1/verification-policy/status`
+- `GET /api/v1/verification-policy/peer-status` (internal authenticated peer read)
 - `GET /api/v1/verification-policy/rollout`
 - `POST /api/v1/incidents/analyze`
 - `GET /api/v1/incidents`
@@ -344,8 +357,8 @@ Local entry points:
 - `apps/executor-gateway/app.py`: authenticated typed Docker operations, operation-specific allowlists, and independent execution audit storage.
 - `apps/docker-proxy/app.py`: internal fixed-route Docker runtime proxy and second target allowlist.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
-- `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, and query operations.
-- `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, and multi-node rollout reporter.
+- `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, revision history, and durable peer credential consumption.
+- `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, request-bound peer identity, and bounded multi-node rollout reporter.
 - `apps/policy-distributor/app.py`: authenticated read-only bundle endpoint used by the optional rollout profile.
 - `apps/dashboard/app/page.tsx`: Dashboard behavior and UI.
 - `apps/dashboard/app/globals.css`: Dashboard visual system.
@@ -359,7 +372,7 @@ Local entry points:
 - LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
-- Authenticated pull distribution, per-node validation/cache fallback, and configured-node convergence reporting are implemented. The reporter is observational rather than a quorum/consensus system, peer status remains read-only but unauthenticated like the existing local status endpoint, and SQLite incident storage still prevents active-active Control API writes from being a production topology.
+- Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
@@ -452,6 +465,15 @@ Local entry points:
 - Added observed/accepted revision and load-result status plus a read-only multi-node rollout endpoint that separates convergence, rollout health, and offline nodes.
 - Revalidated two-node convergence, tamper/unknown-key/rollback/schema rejection, canary and distributor outages, cache restart recovery, default local-file fallback, the real Redis recovery loop, and all Gateway/Proxy isolation boundaries.
 
+### Completed: rollout control-plane hardening
+
+- Preserved the existing unauthenticated local read-only status interface while moving node fan-out to a separate authenticated read-only peer endpoint; no policy mutation API was added.
+- Reused short-lived HMAC workload credentials with explicit key ID, issuer/audience, source identity, unique `jti`, method/path/operation binding, and target-node binding.
+- Persisted peer credential consumption per node so credential replay remains rejected after restart.
+- Replaced serial fan-out with configurable bounded concurrency and per-peer timeout while preserving all successful results during partial failures.
+- Added desired revision/digest plus explicit `converged`, `degraded`, `stalled`, and default-local `inactive` states without removing the existing rollout response fields.
+- Revalidated healthy convergence, signature-rejection stall, canary loss, distributor loss with accepted-only cache, recovery, default local mode, the real Redis approval/recovery path, and Gateway/Proxy isolation.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -459,11 +481,11 @@ Local entry points:
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
-- If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add authenticated peer status plus an external rollout controller or quorum model.
+- If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 14 services; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. Signed policy bundles, durable rollback protection, authenticated pull distribution, accepted-only node caches, observed/accepted status, and multi-node convergence reporting are complete. Safe workload identity key rotation, immutable per-recovery snapshots, configurable verification, the restricted Docker proxy, socket-free Gateway, request-bound credentials with replay prevention, incident-time correlation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Implement one next production-safety milestone. Revalidate distribution authentication, signature/schema/revision rejection, cache fallback, convergence/offline reporting, default local-file mode, Gateway/Proxy boundaries, recommendation-only, missing approval, execution failure, approved Redis recovery, retrieval fallbacks, and both audit stores. Run `make test`, rebuild affected images, run `make smoke`, perform live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 14 services; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded parallel fan-out, partial-failure retention, and explicit desired/converged/degraded/stalled reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, deterministic plus optional semantic retrieval, persistent incidents, exact execution policy, and separate audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Implement one next production-safety milestone, run `make test`, rebuild affected images, run `make smoke`, perform live acceptance, and update this handoff before declaring completion.

@@ -52,6 +52,19 @@ def test_invalid_executor_identity_key_id_is_rejected(key_id):
         Settings(executor_identity_key_id=key_id)
 
 
+@pytest.mark.parametrize("kwargs", [
+    {"verification_policy_peer_identity_key": ""},
+    {"verification_policy_peer_identity_key_id": "bad key"},
+    {"verification_policy_peer_identity_issuer": ""},
+    {"verification_policy_peer_identity_audience": ""},
+    {"verification_policy_peer_identity_ttl_seconds": 31},
+    {"verification_policy_rollout_max_concurrency": 0},
+])
+def test_invalid_verification_policy_peer_identity_settings_are_rejected(kwargs):
+    with pytest.raises(ValidationError):
+        Settings(**kwargs)
+
+
 def test_policy_file_hot_reload_and_last_known_good(tmp_path):
     path = tmp_path / "verification-policies.json"
     path.write_text('{"defaults":{"max_attempts":4},"services":{}}')

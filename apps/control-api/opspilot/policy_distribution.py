@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from pathlib import Path
@@ -7,6 +8,11 @@ from threading import Lock
 from typing import Callable, Mapping, Protocol
 
 import httpx
+from workload_identity import IdentityError, mint_identity, verify_identity
+
+
+PEER_STATUS_PATH = "/api/v1/verification-policy/peer-status"
+PEER_STATUS_OPERATION = "read_verification_policy_status"
 
 
 class PolicyContentSource(Protocol):
@@ -123,10 +129,22 @@ class VerificationPolicyRolloutReporter:
         node_id: str,
         peers: Mapping[str, str] | None = None,
         timeout: float = 2,
+        max_concurrency: int = 4,
+        identity_key: str = "opspilot-local-policy-peer-key",
+        identity_key_id: str = "verification-policy-peer-v1",
+        identity_issuer: str = "opspilot-control-api",
+        identity_audience: str = "opspilot-verification-policy-peer",
+        identity_ttl_seconds: int = 10,
     ):
         self.node_id = node_id
         self.peers = dict(peers or {})
         self.timeout = timeout
+        self.max_concurrency = max_concurrency
+        self.identity_key = identity_key
+        self.identity_key_id = identity_key_id
+        self.identity_issuer = identity_issuer
+        self.identity_audience = identity_audience
+        self.identity_ttl_seconds = identity_ttl_seconds
 
     @staticmethod
     def _node_status(node_id: str, status: dict, online: bool = True) -> dict:
@@ -145,40 +163,94 @@ class VerificationPolicyRolloutReporter:
             "using_cache": bool(distribution.get("using_cache", False)),
         }
 
+    def _headers(self, target_node_id: str) -> dict[str, str]:
+        credential = mint_identity(
+            self.identity_key,
+            issuer=self.identity_issuer,
+            audience=self.identity_audience,
+            subject=self.node_id,
+            ttl_seconds=self.identity_ttl_seconds,
+            method="GET",
+            path=PEER_STATUS_PATH,
+            operation=PEER_STATUS_OPERATION,
+            target=target_node_id,
+            key_id=self.identity_key_id,
+        )
+        return {"Authorization": f"Bearer {credential}"}
+
+    @staticmethod
+    def _offline_node(node_id: str, base_url: str, exc: Exception) -> dict:
+        return {
+            "node_id": node_id,
+            "online": False,
+            "observed_revision": None,
+            "observed_digest": None,
+            "accepted_revision": None,
+            "accepted_digest": None,
+            "load_result": "offline",
+            "last_error": str(exc),
+            "source": base_url,
+            "distribution_online": None,
+            "using_cache": False,
+        }
+
+    async def _fetch_peer(
+        self,
+        client: httpx.AsyncClient,
+        semaphore: asyncio.Semaphore,
+        node_id: str,
+        base_url: str,
+    ) -> dict:
+        try:
+            async with semaphore:
+                response = await client.get(
+                    f"{base_url.rstrip('/')}{PEER_STATUS_PATH}",
+                    headers=self._headers(node_id),
+                )
+                response.raise_for_status()
+                return self._node_status(node_id, response.json())
+        except Exception as exc:
+            return self._offline_node(node_id, base_url, exc)
+
     async def report(self, local_status: dict) -> dict:
         nodes = [self._node_status(self.node_id, local_status)]
+        semaphore = asyncio.Semaphore(self.max_concurrency)
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for node_id, base_url in sorted(self.peers.items()):
-                try:
-                    response = await client.get(
-                        f"{base_url.rstrip('/')}/api/v1/verification-policy/status"
-                    )
-                    response.raise_for_status()
-                    nodes.append(self._node_status(node_id, response.json()))
-                except Exception as exc:
-                    nodes.append({
-                        "node_id": node_id,
-                        "online": False,
-                        "observed_revision": None,
-                        "observed_digest": None,
-                        "accepted_revision": None,
-                        "accepted_digest": None,
-                        "load_result": "offline",
-                        "last_error": str(exc),
-                        "source": base_url,
-                        "distribution_online": None,
-                        "using_cache": False,
-                    })
+            tasks = [
+                self._fetch_peer(client, semaphore, node_id, base_url)
+                for node_id, base_url in sorted(self.peers.items())
+            ]
+            if tasks:
+                nodes.extend(await asyncio.gather(*tasks))
 
         accepted = {
             (node["accepted_revision"], node["accepted_digest"])
             for node in nodes if node["online"]
         }
+        observed_versions = [
+            (node["observed_revision"], node["observed_digest"])
+            for node in nodes
+            if node["online"] and isinstance(node["observed_revision"], int)
+        ]
+        accepted_versions = [
+            (node["accepted_revision"], node["accepted_digest"])
+            for node in nodes
+            if node["online"] and isinstance(node["accepted_revision"], int)
+        ]
+        desired_versions = observed_versions or accepted_versions
+        desired_revision = max((version[0] for version in desired_versions), default=None)
+        desired_digests = {
+            digest for revision, digest in desired_versions
+            if revision == desired_revision and isinstance(digest, str)
+        }
+        desired_digest = next(iter(desired_digests)) if len(desired_digests) == 1 else None
+        desired_conflict = len(desired_digests) > 1
         converged = (
             bool(nodes)
             and all(node["online"] for node in nodes)
-            and len(accepted) == 1
-            and next(iter(accepted))[0] is not None
+            and desired_revision is not None
+            and not desired_conflict
+            and accepted == {(desired_revision, desired_digest)}
             and all(
                 node["load_result"] == "accepted"
                 and node["observed_revision"] == node["accepted_revision"]
@@ -186,17 +258,82 @@ class VerificationPolicyRolloutReporter:
                 for node in nodes
             )
         )
-        observed_revisions = [
-            node["observed_revision"] for node in nodes
-            if isinstance(node["observed_revision"], int)
-        ]
+        degraded = (
+            any(not node["online"] for node in nodes)
+            or any(
+                node["online"] and node["distribution_online"] is False
+                for node in nodes
+            )
+        )
+        stalled = desired_revision is not None and not converged and not degraded
+        rollout_state = (
+            "degraded" if degraded
+            else "converged" if converged
+            else "stalled" if stalled
+            else "inactive"
+        )
         return {
             "converged": converged,
-            "healthy": converged and all(
-                node["distribution_online"] is not False for node in nodes
-            ),
-            "desired_revision": max(observed_revisions) if observed_revisions else None,
+            "healthy": converged and not degraded,
+            "degraded": degraded,
+            "stalled": stalled,
+            "rollout_state": rollout_state,
+            "desired_revision": desired_revision,
+            "desired_digest": desired_digest,
+            "desired_conflict": desired_conflict,
+            "desired": {
+                "revision": desired_revision,
+                "digest": desired_digest,
+                "conflict": desired_conflict,
+            },
             "online_nodes": sum(1 for node in nodes if node["online"]),
             "total_nodes": len(nodes),
             "nodes": nodes,
         }
+
+
+class VerificationPolicyPeerAuthenticator:
+    """Verify one-time, request-bound credentials for the internal peer endpoint."""
+
+    def __init__(
+        self,
+        node_id: str,
+        identity_key: str,
+        identity_key_id: str,
+        identity_issuer: str,
+        identity_audience: str,
+        maximum_ttl_seconds: int,
+        consume: Callable[[str, str, int], None],
+    ):
+        self.node_id = node_id
+        self.identity_key = identity_key
+        self.identity_key_id = identity_key_id
+        self.identity_issuer = identity_issuer
+        self.identity_audience = identity_audience
+        self.maximum_ttl_seconds = maximum_ttl_seconds
+        self.consume = consume
+
+    def verify(self, authorization: str | None) -> dict:
+        prefix = "Bearer "
+        if not authorization or not authorization.startswith(prefix):
+            raise IdentityError("peer credential is required")
+        identity = verify_identity(
+            authorization[len(prefix):],
+            self.identity_key,
+            issuer=self.identity_issuer,
+            audience=self.identity_audience,
+            method="GET",
+            path=PEER_STATUS_PATH,
+            maximum_ttl_seconds=self.maximum_ttl_seconds,
+            key_id=self.identity_key_id,
+        )
+        if (
+            identity["operation"] != PEER_STATUS_OPERATION
+            or identity["target"] != self.node_id
+        ):
+            raise IdentityError("peer credential claims do not match this node")
+        try:
+            self.consume(identity["jti"], identity["sub"], identity["exp"])
+        except ValueError as exc:
+            raise IdentityError(str(exc)) from exc
+        return identity

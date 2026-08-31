@@ -82,8 +82,36 @@ class IncidentStore:
                     signature_status TEXT NOT NULL, load_result TEXT NOT NULL,
                     observed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS verification_policy_peer_credentials (
+                    credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL
+                );
             """)
             self._seed_runbooks(db)
+
+    def consume_verification_policy_peer_credential(
+        self, credential_id: str, identity_subject: str, expires_at: int
+    ) -> None:
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            with self.connection() as db:
+                db.execute(
+                    "DELETE FROM verification_policy_peer_credentials WHERE expires_at < ?",
+                    (now - 60,),
+                )
+                db.execute(
+                    """INSERT INTO verification_policy_peer_credentials(
+                        credential_id, identity_subject, expires_at, consumed_at
+                    ) VALUES(?,?,?,?)""",
+                    (
+                        credential_id,
+                        identity_subject,
+                        expires_at,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("peer credential has already been used") from exc
 
     def record_verification_policy_revision(
         self,
