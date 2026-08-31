@@ -97,7 +97,7 @@ class GatewayExecutor:
     def __init__(
         self, base_url: str, identity_key: str, timeout: float = 15,
         issuer: str = "opspilot-control-api", audience: str = "opspilot-executor-gateway",
-        subject: str = "control-api", ttl_seconds: int = 10,
+        subject: str = "control-api", ttl_seconds: int = 10, key_id: str = "control-api-v1",
     ):
         self.base_url = base_url.rstrip("/")
         self.identity_key = identity_key
@@ -106,6 +106,7 @@ class GatewayExecutor:
         self.audience = audience
         self.subject = subject
         self.ttl_seconds = ttl_seconds
+        self.key_id = key_id
 
     async def execute(self, action: ExecutionAction) -> str:
         payload = {"operation": action.operation, "target": action.target}
@@ -120,6 +121,7 @@ class GatewayExecutor:
             path=path,
             operation=action.operation,
             target=action.target,
+            key_id=self.key_id,
         )
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

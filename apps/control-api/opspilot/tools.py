@@ -80,6 +80,7 @@ class LiveOpsTools(OpsTools):
             path=path,
             operation=operation,
             target=target,
+            key_id=self.settings.executor_identity_key_id,
         )
         headers = {"Authorization": f"Bearer {credential}"}
         async with httpx.AsyncClient(timeout=self.settings.executor_gateway_timeout) as client:

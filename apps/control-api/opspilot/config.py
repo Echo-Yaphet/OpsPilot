@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from pathlib import Path
 from threading import Lock
 from typing import Literal, Mapping
@@ -141,6 +142,7 @@ class Settings(BaseSettings):
     docker_host: str = "unix:///var/run/docker.sock"
     executor_gateway_url: str = "http://executor-gateway:8090"
     executor_identity_key: str = "opspilot-local-workload-signing-key"
+    executor_identity_key_id: str = "control-api-v1"
     executor_identity_issuer: str = "opspilot-control-api"
     executor_identity_audience: str = "opspilot-executor-gateway"
     executor_identity_subject: str = "control-api"
@@ -163,6 +165,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_verification_policies(self):
+        if not self.executor_identity_key.strip():
+            raise ValueError("executor identity key must not be empty")
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.executor_identity_key_id):
+            raise ValueError("executor identity key ID must be 1-64 safe characters")
+        if not 1 <= self.executor_identity_ttl_seconds <= 60:
+            raise ValueError("executor identity TTL must be between 1 and 60 seconds")
         default = self.default_verification_policy()
         for service, override in self.verification_service_policies.items():
             if not service.strip():

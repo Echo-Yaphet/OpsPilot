@@ -44,6 +44,7 @@ workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_identity_audience,
     settings.executor_identity_subject,
     settings.executor_identity_ttl_seconds,
+    settings.executor_identity_key_id,
 ), knowledge_retriever=knowledge_retriever,
     default_verification_policy=settings.default_verification_policy(),
     verification_policies=settings.verification_policies(),

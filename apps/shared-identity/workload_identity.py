@@ -4,6 +4,7 @@ import hmac
 import json
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -35,13 +36,16 @@ def mint_identity(
     target: str,
     now: int | None = None,
     credential_id: str | None = None,
+    key_id: str = "control-api-v1",
 ) -> str:
     if not secret:
         raise IdentityError("identity signing key is not configured")
     if not 1 <= ttl_seconds <= 60:
         raise IdentityError("identity TTL must be between 1 and 60 seconds")
+    if not isinstance(key_id, str) or not key_id:
+        raise IdentityError("identity signing key ID is not configured")
     issued_at = int(time.time()) if now is None else now
-    header = {"alg": "HS256", "kid": "control-api-v1", "typ": "JWT"}
+    header = {"alg": "HS256", "kid": key_id, "typ": "JWT"}
     claims = {
         "iss": issuer,
         "aud": audience,
@@ -63,7 +67,7 @@ def mint_identity(
 
 def verify_identity(
     token: str,
-    secret: str,
+    secret: str | None = None,
     *,
     issuer: str,
     audience: str,
@@ -72,24 +76,39 @@ def verify_identity(
     maximum_ttl_seconds: int,
     clock_skew_seconds: int = 2,
     now: int | None = None,
+    key_id: str = "control-api-v1",
+    verification_keys: Mapping[str, str] | None = None,
+    previous_key_id: str | None = None,
+    previous_key_valid_until: int | None = None,
 ) -> dict[str, Any]:
-    if not secret:
-        raise IdentityError("identity verification key is not configured")
     try:
         encoded_header, encoded_claims, encoded_signature = token.split(".")
     except ValueError as exc:
         raise IdentityError("credential must have three segments") from exc
-    signed = f"{encoded_header}.{encoded_claims}"
-    expected = hmac.new(secret.encode(), signed.encode(), hashlib.sha256).digest()
-    if not hmac.compare_digest(_decode(encoded_signature), expected):
-        raise IdentityError("credential signature is invalid")
     try:
         header = json.loads(_decode(encoded_header))
         claims = json.loads(_decode(encoded_claims))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise IdentityError("credential JSON is invalid") from exc
-    if header != {"alg": "HS256", "kid": "control-api-v1", "typ": "JWT"}:
+    if not isinstance(header, dict) or set(header) != {"alg", "kid", "typ"}:
         raise IdentityError("credential header is invalid")
+    if header["alg"] != "HS256" or header["typ"] != "JWT":
+        raise IdentityError("credential header is invalid")
+    token_key_id = header["kid"]
+    if not isinstance(token_key_id, str) or not token_key_id:
+        raise IdentityError("credential key ID is invalid")
+    keys = dict(verification_keys) if verification_keys is not None else {key_id: secret or ""}
+    verification_key = keys.get(token_key_id)
+    if not verification_key:
+        raise IdentityError("credential key ID is unknown")
+    current = int(time.time()) if now is None else now
+    if token_key_id == previous_key_id:
+        if previous_key_valid_until is None or current > previous_key_valid_until:
+            raise IdentityError("credential previous key overlap has expired")
+    signed = f"{encoded_header}.{encoded_claims}"
+    expected = hmac.new(verification_key.encode(), signed.encode(), hashlib.sha256).digest()
+    if not hmac.compare_digest(_decode(encoded_signature), expected):
+        raise IdentityError("credential signature is invalid")
     required = {"iss", "aud", "sub", "iat", "exp", "jti", "method", "path", "operation", "target"}
     if not isinstance(claims, dict) or not required.issubset(claims):
         raise IdentityError("credential claims are incomplete")
@@ -101,11 +120,10 @@ def verify_identity(
         raise IdentityError("credential string claims are invalid")
     if not isinstance(claims["iat"], int) or not isinstance(claims["exp"], int):
         raise IdentityError("credential timestamps are invalid")
-    current = int(time.time()) if now is None else now
     if claims["iat"] > current + clock_skew_seconds:
         raise IdentityError("credential is not active yet")
     if claims["exp"] < current - clock_skew_seconds:
         raise IdentityError("credential has expired")
     if claims["exp"] <= claims["iat"] or claims["exp"] - claims["iat"] > maximum_ttl_seconds:
         raise IdentityError("credential lifetime is invalid")
-    return claims
+    return {**claims, "key_id": token_key_id}

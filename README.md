@@ -60,7 +60,27 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> Docker socket 仅挂载到 `docker-proxy`。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的状态、restart 和 stop 路由；原始 Docker API 不可访问。Gateway 本身无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定 issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。默认共享签名密钥和代理 token 仅适用于本地 MVP，生产环境仍应接入外部 workload identity、密钥轮换以及操作系统级的运行时权限隔离。
+> Docker socket 仅挂载到 `docker-proxy`。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的状态、restart 和 stop 路由；原始 Docker API 不可访问。Gateway 本身无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。默认共享签名密钥和代理 token 仅适用于本地 MVP，生产环境仍应接入外部 workload identity 以及操作系统级的运行时权限隔离。
+
+## Gateway workload identity 密钥轮换
+
+未配置新变量时仍使用原有 `EXECUTOR_IDENTITY_KEY` 和默认 key ID `control-api-v1`。轮换时，Gateway 只按凭证 header 中的明确 `kid` 选择验证 key，不会用多把 key 逐一试签。当前签名/验证 key 使用：
+
+```bash
+EXECUTOR_IDENTITY_KEY_ID=control-api-v2
+EXECUTOR_IDENTITY_KEY=replace-with-new-secret
+```
+
+Gateway 可在一个明确截止的短窗口内同时接受上一把验证 key：
+
+```bash
+EXECUTOR_IDENTITY_PREVIOUS_KEY_ID=control-api-v1
+EXECUTOR_IDENTITY_PREVIOUS_KEY=replace-with-old-secret
+EXECUTOR_IDENTITY_PREVIOUS_KEY_VALID_UNTIL=1788175045 # Unix timestamp
+EXECUTOR_IDENTITY_MAX_ROTATION_OVERLAP_SECONDS=3600
+```
+
+安全切换顺序是：先部署“新 key 为当前、旧 key 为上一把且带未来截止时间”的 Gateway；确认旧 Control API 仍可访问后，再把 Control API 切到新 key；窗口结束后从 Gateway 删除全部 `PREVIOUS` 配置。上一把 key 的 ID、secret、截止时间必须同时配置；重复 ID、重复 secret、非法/已过去的截止时间，或截止时间超过重叠上限都会让 Gateway 拒绝启动。重叠上限默认 3600 秒且只能配置为 1–86400 秒。未知 `kid` 与窗口结束后的旧 key 会在 Docker 访问前返回 401。凭证原有的短期 expiry、audience、请求/action/target 绑定和持久化 `jti` 防重放保持不变。
 
 ## 其他故障场景
 
@@ -136,7 +156,7 @@ Compose 还会把 `infra/opspilot/verification-policies.json` 目录只读挂载
 
 每次 Verification 在开始时锁定一个不可变策略快照，避免热更新改变正在进行的恢复判定。无效 JSON、未知字段或违反约束的更新不会替换当前策略，而是继续使用最后一次有效版本。`GET /api/v1/verification-policy/status` 可查看当前来源、内容版本、已配置服务和最近一次加载错误；该接口只读，不提供未认证的策略写入能力。
 
-Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject/credential ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
+Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会按显式 key ID 选择当前或尚在重叠窗口内的上一验证 key，再验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject、credential ID 和 key ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 
 ## 事件与持久化 API
 

@@ -39,6 +39,12 @@ def test_invalid_verification_policy_is_rejected(overrides):
         Settings(verification_service_policies=overrides)
 
 
+@pytest.mark.parametrize("key_id", ["", "has space", "x" * 65])
+def test_invalid_executor_identity_key_id_is_rejected(key_id):
+    with pytest.raises(ValidationError):
+        Settings(executor_identity_key_id=key_id)
+
+
 def test_policy_file_hot_reload_and_last_known_good(tmp_path):
     path = tmp_path / "verification-policies.json"
     path.write_text('{"defaults":{"max_attempts":4},"services":{}}')

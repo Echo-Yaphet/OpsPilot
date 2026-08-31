@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (safe hot-reload SLO policy milestone)
+Last updated: 2026-08-31 (Gateway workload identity key rotation milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Safe file-backed SLO policy hot reload is complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Safe Gateway workload identity key rotation is complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -76,6 +76,10 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Workload credentials have a bounded lifetime and carry issuer, audience, subject, issued/expiry times, unique `jti`, HTTP method/path, operation, and target claims.
 - Gateway rejects expired, wrong-audience, request/action-mismatched, and replayed credentials before Docker access.
 - Consumed credential IDs are persisted atomically in the independent Gateway SQLite store; action audits include workload subject and credential ID.
+- Every newly minted workload credential carries an explicit configurable key ID; the Gateway selects exactly that verification key and rejects unknown IDs before Docker access.
+- The Gateway supports one current and one previous verification key only, with an absolute finite overlap deadline and a bounded overlap limit (one hour by default, at most one day). Incomplete, duplicate, malformed, expired, or overlong rotation configuration is rejected at startup.
+- A Gateway-first then Control-API rotation preserves in-flight availability: the old signer remains valid only inside the configured overlap, while the new signer switches without weakening credential expiry, request/action/target binding, or persistent `jti` replay prevention.
+- Gateway execution audits now retain the workload key ID alongside subject and credential ID. Existing `EXECUTOR_IDENTITY_KEY` configuration remains compatible through the default `control-api-v1` key ID.
 - A replaceable `KnowledgeRetriever` seam supplies deterministic SQLite-backed runbook and historical-incident retrieval without changing `IncidentState` or public HTTP responses.
 - SQLite is migrated in place with a `runbooks` table and three idempotently seeded runbooks for Redis, MySQL, and inconclusive service degradation.
 - RCA retrieves exact-root-cause runbooks plus compact same-service/same-root-cause incident summaries and records both as `runbook` and `incident_history` evidence.
@@ -113,6 +117,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the Gateway workload identity key rotation milestone:
+
+- All 61 backend tests passed in rebuilt Control API and Gateway images. New coverage verifies current/previous key acceptance, explicit key IDs, unknown-key rejection, overlap expiry and maximum duration, invalid rotation configuration, and key-ID auditing; the only warning remains the LangGraph dependency deprecation notice.
+- Compose validation passed and rebuilt Control API and Gateway production images deployed. The unchanged default `EXECUTOR_IDENTITY_KEY` configuration remained operational with the default `control-api-v1` ID.
+- A live two-stage rotation first deployed the Gateway with new `control-api-v2` current key plus the old `control-api-v1` key under a finite deadline. The still-old Control API successfully queried Redis through the Gateway; after the Control API switched, the new key also succeeded.
+- During the live overlap, old and new key requests returned 200. Unknown key ID, expired credential, wrong audience, claim mismatch, replay, and missing identity returned 401; an authenticated unknown target returned 403. A deliberately incomplete previous-key configuration was rejected when a temporary Gateway container imported its application.
+- Live Proxy checks preserved the boundary: missing identity returned 401, unknown fixed-route target returned 403, and raw Docker plus delete-style routes returned 404.
+- A real Redis outage retained `dependency_up=0`, RCA confidence `0.92`, recommendation-only non-execution, and missing-approval blocking while Redis remained stopped. Approved recovery restarted Redis through the Gateway and Proxy and reached `resolved`, `verified=true` on verification check four. Redis and `payment-service` were healthy afterward.
 
 Latest verification for the safe hot-reload SLO policy milestone:
 
@@ -316,7 +329,7 @@ Local entry points:
 - Policy distribution is a local read-only mounted JSON file with per-process last-known-good state; multi-node distribution, signed policy bundles, coordinated rollout, and durable revision history are not yet implemented.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
-- The local HMAC signing key and Gateway-to-proxy token are statically configured. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs external workload identity/key rotation and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
+- The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
@@ -362,6 +375,13 @@ Local entry points:
 - Correlated Gateway action audits with workload subject and credential ID while preserving the independent audit database.
 - Revalidated legacy-token, expiry, audience, claim mismatch, replay, allowlist, recommendation-only, missing-approval, and approved Redis recovery paths.
 
+### Completed: safe Gateway workload identity key rotation
+
+- Added explicit configurable key IDs to minted credentials and exact key selection at the Gateway.
+- Added current plus one previous verification key with an absolute overlap deadline and fail-fast configuration validation.
+- Preserved default configuration compatibility, short credential lifetime, request/action/target binding, persistent replay denial, typed operations, and Gateway/Proxy isolation.
+- Revalidated a live Gateway-first/Control-API-second rotation, old/new/unknown/expired keys, all identity denials, Proxy fixed-route denials, and the real Redis recovery path.
+
 ### Completed: restricted Docker runtime proxy
 
 - Moved the Docker socket and Docker SDK out of the Gateway into a single-purpose internal proxy.
@@ -390,7 +410,7 @@ Local entry points:
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
-- Replace the local signing key with externally issued workload identity and key rotation when moving beyond the local stack.
+- Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - Add signed policy bundles, durable revision history, and coordinated multi-node distribution if the local file-backed policy manager moves beyond the single-node stack.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
@@ -398,4 +418,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 14 services. Safe file-backed SLO policy hot reload with immutable per-recovery snapshots and last-known-good fallback, configurable per-service verification, the restricted Docker proxy, socket-free Gateway, short-lived request-bound workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone. Keep hot-reload validation/status/last-known-good behavior, SLO fallback and consecutive stability, proxy isolation and fixed routes, identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 14 services. Safe workload identity key rotation with explicit key IDs and bounded current/previous overlap, file-backed SLO policy hot reload with immutable per-recovery snapshots and last-known-good fallback, configurable per-service verification, the restricted Docker proxy, socket-free Gateway, short-lived request-bound workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone. Keep key-ID selection/rotation validation/overlap expiry, hot-reload validation/status/last-known-good behavior, SLO fallback and consecutive stability, proxy isolation and fixed routes, identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
