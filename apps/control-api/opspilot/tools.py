@@ -33,8 +33,14 @@ class LiveOpsTools(OpsTools):
         self.settings = settings
 
     async def query_metric(self, query: str) -> list[dict]:
+        return await self.query_metric_at(query)
+
+    async def query_metric_at(self, query: str, at: datetime | None = None) -> list[dict]:
+        params = {"query": query}
+        if at is not None:
+            params["time"] = str(at.timestamp())
         async with httpx.AsyncClient(timeout=5) as client:
-            response = await client.get(f"{self.settings.prometheus_url}/api/v1/query", params={"query": query})
+            response = await client.get(f"{self.settings.prometheus_url}/api/v1/query", params=params)
             response.raise_for_status()
             payload = response.json()
         if payload.get("status") != "success":
@@ -44,6 +50,11 @@ class LiveOpsTools(OpsTools):
     async def query_logs(self, service: str, minutes: int = 10, limit: int = 100) -> list[str]:
         end = datetime.now(timezone.utc)
         start = end - timedelta(minutes=minutes)
+        return await self.query_logs_between(service, start, end, limit)
+
+    async def query_logs_between(
+        self, service: str, start: datetime, end: datetime, limit: int = 100
+    ) -> list[str]:
         params = {
             "query": f'{{compose_service="{service}"}} |~ "(?i)(error|failed|refused|timeout)"',
             "start": str(int(start.timestamp() * 1e9)), "end": str(int(end.timestamp() * 1e9)),

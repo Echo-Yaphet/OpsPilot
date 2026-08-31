@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import Literal, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -19,6 +20,7 @@ class WorkflowState(TypedDict):
     logs: list[str]
     target: str
     policy_decision: PolicyDecision | None
+    evidence_context: dict
 
 
 class IncidentWorkflow:
@@ -95,7 +97,13 @@ class IncidentWorkflow:
         state, request = graph_state["incident"], graph_state["request"]
         metric_query = f'dependency_up{{service="{request.service}"}}'
         try:
-            metrics = await self.tools.query_metric(metric_query)
+            query_at = graph_state["evidence_context"]["incident_at_value"]
+            query_metric_at = getattr(self.tools, "query_metric_at", None)
+            if query_metric_at is None:
+                metrics = await self.tools.query_metric(metric_query)
+                graph_state["evidence_context"]["prometheus"]["mode"] = "current_fallback"
+            else:
+                metrics = await query_metric_at(metric_query, query_at)
         except Exception as exc:
             metrics = []
             state.evidence.append(Evidence(source="prometheus", summary="metrics query unavailable", data=str(exc)))
@@ -106,10 +114,28 @@ class IncidentWorkflow:
     async def _log(self, graph_state: WorkflowState) -> dict:
         state, request = graph_state["incident"], graph_state["request"]
         try:
-            logs = await self.tools.query_logs(request.service)
+            context = graph_state["evidence_context"]
+            query_logs_between = getattr(self.tools, "query_logs_between", None)
+            if query_logs_between is None:
+                logs = await self.tools.query_logs(request.service)
+                context["loki"]["mode"] = "recent_fallback"
+            else:
+                logs = await query_logs_between(
+                    request.service, context["window_start_value"], context["window_end_value"]
+                )
         except Exception as exc:
             logs = [f"log query unavailable: {exc}"]
         state.evidence.append(Evidence(source="loki", summary="recent error logs", data=logs[:20]))
+        public_context = {
+            key: value for key, value in graph_state["evidence_context"].items()
+            if not key.endswith("_value")
+        }
+        public_context["prometheus"]["series_count"] = len(graph_state["metrics"])
+        public_context["loki"]["line_count"] = len(logs)
+        state.evidence.append(Evidence(
+            source="incident_context", summary="incident-time evidence correlation",
+            data=public_context,
+        ))
         self.event(state, AgentName.LOG, f"Collected {len(logs)} relevant log lines")
         return {"incident": state, "logs": logs}
 
@@ -305,6 +331,29 @@ class IncidentWorkflow:
         return "not_executed"
 
     async def run(self, request: AnalyzeRequest) -> IncidentState:
+        now = datetime.now(timezone.utc)
+        incident_at = request.incident_started_at or now
+        if incident_at.tzinfo is None:
+            incident_at = incident_at.replace(tzinfo=timezone.utc)
+        incident_at = incident_at.astimezone(timezone.utc)
+        window_start = incident_at - timedelta(minutes=2)
+        window_end = min(now, incident_at + timedelta(minutes=5))
+        if window_end < window_start:
+            window_end = window_start
+        evidence_context = {
+            "origin": request.evidence_origin,
+            "incident_at": incident_at.isoformat(),
+            "window_start": window_start.isoformat(),
+            "window_end": window_end.isoformat(),
+            "prometheus": {"mode": "incident_instant", "query_at": incident_at.isoformat()},
+            "loki": {
+                "mode": "incident_window", "start": window_start.isoformat(),
+                "end": window_end.isoformat(),
+            },
+            "incident_at_value": incident_at,
+            "window_start_value": window_start,
+            "window_end_value": window_end,
+        }
         incident = IncidentState(
             incident_id=request.incident_id or IncidentState().incident_id,
             service=request.service,
@@ -319,6 +368,7 @@ class IncidentWorkflow:
                 "logs": [],
                 "target": request.service,
                 "policy_decision": None,
+                "evidence_context": evidence_context,
             },
             config={"configurable": {"thread_id": incident.incident_id}},
         )

@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
@@ -79,6 +80,19 @@ def alert_key(alert: dict) -> str:
     return hashlib.sha256(stable.encode()).hexdigest()
 
 
+def alert_started_at(alert: dict) -> datetime:
+    value = alert.get("startsAt")
+    if not value:
+        return datetime.now(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return datetime.now(timezone.utc)
+
+
 @app.post("/api/v1/alertmanager/webhook")
 async def alertmanager_webhook(payload: dict):
     processed: list[IncidentState] = []
@@ -106,6 +120,7 @@ async def alertmanager_webhook(payload: dict):
             approved=False,
             incident_id=existing.incident_id if existing else None,
         )
+        request.set_evidence_context(alert_started_at(alert), "alertmanager")
         try:
             state = await workflow.run(request)
         except Exception as exc:

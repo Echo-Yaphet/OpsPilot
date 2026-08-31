@@ -119,6 +119,11 @@ class SemanticKnowledgeRetriever:
             vectors = self.embeddings.embed([query, *documents])
             if len(vectors) != len(documents) + 1:
                 raise ValueError("embedding provider returned an unexpected vector count")
+            dimensions = {len(vector) for vector in vectors}
+            if dimensions == {0} or len(dimensions) != 1:
+                raise ValueError("embedding provider returned invalid vector dimensions")
+            if any(not math.isfinite(value) for vector in vectors for value in vector):
+                raise ValueError("embedding provider returned non-finite vector values")
             semantic: list[RunbookMatch] = []
             deterministic_ids = {item.runbook_id for item in deterministic}
             for candidate, vector in zip(candidates, vectors[1:]):

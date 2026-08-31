@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-30 (optional semantic retrieval milestone)
+Last updated: 2026-08-31 (incident-time evidence correlation milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Optional semantic retrieval with deterministic fallback is complete. Continue with evidence correlation or the next production-safety milestone while keeping the Redis incident flow green.
+4. Incident-time evidence correlation and the expanded retrieval evaluation set are complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -78,6 +78,12 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Semantic matches supplement rather than displace exact deterministic results; deterministic scores and ordering remain intact.
 - Missing configuration, endpoint failures, timeouts, malformed vector counts, and invalid dimensions fail open to SQLite deterministic retrieval.
 - The local MVP starts and tests without an embedding model, service, or API key.
+- Alertmanager firing analysis carries its original `startsAt` into an internal evidence context without changing `AnalyzeRequest`'s public schema; manual analysis uses its request start time.
+- Prometheus dependency queries are evaluated at the incident time, while Loki queries are bounded to two minutes before through five minutes after the incident (and never beyond the current time).
+- A new `incident_context` evidence record exposes the origin, incident timestamp, source query windows/modes, and result counts while preserving existing Prometheus/Loki list-shaped evidence data.
+- Alternative `OpsTools` implementations remain compatible: the workflow uses the original current/recent query methods when incident-time extensions are unavailable.
+- Offline retrieval evaluation now covers ten labeled positive, fuzzy, contradictory, wrong-service/root-cause, service-degradation, and unrelated cases with top-1 accuracy, false-positive rate, deterministic-regression count, and embedding fallback success-rate checks.
+- Semantic evaluation also covers low-similarity rejection, embedding failure, vector-count errors, dimension mismatches, and non-finite vector values.
 
 ### Dashboard
 
@@ -98,6 +104,17 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the incident-time evidence correlation milestone:
+
+- All 34 backend tests passed in the rebuilt Control API image, including Alertmanager `startsAt` propagation, incident-window tool calls, unchanged public schemas, ten-case retrieval quality metrics, low-similarity rejection, embedding failure fallback, and vector anomaly fallback.
+- The rebuilt Control API production image was deployed; its startup completed successfully and `make smoke` passed with `incident_context` evidence while retaining the original Prometheus and Loki data shapes.
+- A real Redis outage with the fuzzy symptom `checkout cache cannot be reached` produced Redis metric `0`, one Loki error inside the bounded incident window, RCA confidence `0.92`, the Redis runbook, and no execution in recommendation-only mode.
+- The same outage kept `execute=true, approved=false` at `awaiting_approval`; an approved unknown target was policy-denied without Verification.
+- Live executor-gateway checks returned HTTP 401 without identity and HTTP 403 for an authenticated non-allowlisted target.
+- Approved Redis recovery restarted Redis through the gateway and resolved on deep Verification check four with the container running, service healthy, dependency metric restored, and `verified=true`; final `make smoke` passed.
+- A live Alertmanager firing event preserved its `startsAt` in `incident_context`, remained non-executing, and its resolved event only changed the incident to `alert_resolved`.
+- Control API policy/approval/execution/verification audits and the gateway's independent allowed/denied audit records were both readable from their persistent SQLite stores after acceptance.
 
 Latest verification for the optional semantic retrieval milestone:
 
@@ -247,9 +264,9 @@ Local entry points:
 
 - LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
-- Typed deterministic retrieval and optional embedding-based semantic ranking are implemented; corpus embedding caches/vector indexes, evidence correlation, and learned long-term memory are not yet implemented.
+- Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Verification now checks container state, application health, and dependency metrics, but uses fixed local thresholds rather than configurable SLO policies.
-- Old error logs can appear in the ten-minute Loki window. Metrics currently take precedence for Redis/MySQL RCA, but evidence scoring needs time and incident correlation.
+- Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
 - The executor gateway still has broad Docker socket access. It has a separate deployment, operation/target allowlists, a shared internal identity, and independent audit records, but production needs short-lived workload identity and a narrower Docker API proxy or equivalent runtime permissions.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
@@ -293,7 +310,8 @@ Local entry points:
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
-- Add incident-time evidence correlation and a larger labeled retrieval evaluation set; consider a persisted vector index only when corpus size requires it.
+- Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
+- Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace the local shared gateway token with short-lived workload identity and narrow the gateway's Docker/API permissions.
 - Generalize Verification Agent thresholds and time windows into per-service SLO policies.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
@@ -302,4 +320,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 13 services. Alertmanager incidents, SQLite persistence, bounded service-level recovery verification, exact execution allowlisting, auditable policy decisions, and a separately deployed authenticated executor gateway are complete. The Control API no longer mounts the Docker socket; the gateway accepts only typed allowlisted operations and persists its own execution audit. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard data compatibility, Alertmanager's non-execution rule, and the independent requirements that policy allows the action and the caller supplies both `execute=true` and `approved=true`. Implement the next roadmap milestone: runbook and historical-incident retrieval, preferably with a deterministic retrieval seam and SQLite-backed records before adding semantic RAG. Keep recommendation-only, missing-approval, policy-denial, gateway failure, approved Redis recovery, deep verification, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 13 services. Incident-time Prometheus/Loki/Alertmanager evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, bounded service verification, exact execution policy, and the separate authenticated executor gateway are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone: preferably short-lived gateway workload identity, narrower Docker/API permissions, or configurable per-service SLO verification. Keep recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, deep verification, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.

@@ -1,26 +1,75 @@
 [
   {
+    "category": "redis_exact",
     "service": "payment-service",
     "symptom": "Redis unavailable",
     "root_cause": "Redis dependency is unavailable",
-    "expected_runbook_id": "redis-dependency-recovery-v1"
+    "expected_runbook_id": "redis-dependency-recovery-v1",
+    "deterministic_baseline_score": 111.0
   },
   {
+    "category": "mysql_exact",
     "service": "order-service",
     "symptom": "MySQL connection refused",
+    "root_cause": "MySQL dependency is unavailable",
+    "expected_runbook_id": "mysql-dependency-recovery-v1",
+    "deterministic_baseline_score": 111.0
+  },
+  {
+    "category": "redis_fuzzy_symptom",
+    "service": "payment-service",
+    "symptom": "checkout cache cannot be reached",
+    "root_cause": "Redis dependency is unavailable",
+    "expected_runbook_id": "redis-dependency-recovery-v1",
+    "deterministic_baseline_score": 110.0
+  },
+  {
+    "category": "wrong_root_cause",
+    "service": "payment-service",
+    "symptom": "database connection pool exhausted",
+    "root_cause": "Unknown upstream failure",
+    "expected_runbook_id": null
+  },
+  {
+    "category": "mysql_fuzzy_symptom",
+    "service": "user-service",
+    "symptom": "customer profile storage will not answer",
     "root_cause": "MySQL dependency is unavailable",
     "expected_runbook_id": "mysql-dependency-recovery-v1"
   },
   {
-    "service": "payment-service",
-    "symptom": "checkout cache cannot be reached",
+    "category": "redis_fuzzy_symptom",
+    "service": "order-service",
+    "symptom": "session cache endpoint stopped responding",
     "root_cause": "Redis dependency is unavailable",
     "expected_runbook_id": "redis-dependency-recovery-v1"
   },
   {
-    "service": "payment-service",
-    "symptom": "database connection pool exhausted",
+    "category": "wrong_service_and_root_cause",
+    "service": "inventory-service",
+    "symptom": "checkout cache cannot be reached",
     "root_cause": "Unknown upstream failure",
+    "expected_runbook_id": null
+  },
+  {
+    "category": "wrong_root_cause",
+    "service": "payment-service",
+    "symptom": "Redis unavailable",
+    "root_cause": "MySQL dependency is unavailable",
+    "expected_runbook_id": "mysql-dependency-recovery-v1"
+  },
+  {
+    "category": "service_degradation",
+    "service": "payment-service",
+    "symptom": "sporadic checkout failures",
+    "root_cause": "Insufficient evidence; dependency or application degradation suspected",
+    "expected_runbook_id": "service-degradation-recovery-v1"
+  },
+  {
+    "category": "unrelated_negative",
+    "service": "payment-service",
+    "symptom": "dashboard typography is misaligned",
+    "root_cause": "Presentation layer defect",
     "expected_runbook_id": null
   }
 ]

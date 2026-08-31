@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from opspilot import main
@@ -11,9 +12,11 @@ from opspilot.storage import IncidentStore
 
 class FakeWorkflow:
     calls = 0
+    last_context = None
 
     async def run(self, request: AnalyzeRequest):
         self.calls += 1
+        self.last_context = (request.evidence_origin, request.incident_started_at)
         return IncidentState(
             incident_id=request.incident_id or "incident-created-from-alert",
             service=request.service,
@@ -43,6 +46,7 @@ def test_alertmanager_webhook_persists_and_deduplicates(tmp_path, monkeypatch):
     client, store, workflow = configure_test_app(tmp_path, monkeypatch)
     payload = {"status": "firing", "alerts": [{
         "status": "firing", "fingerprint": "redis-payment",
+        "startsAt": "2026-08-31T03:00:00Z",
         "labels": {"alertname": "RedisDependencyDown", "service": "payment-service"},
         "annotations": {"summary": "Redis is unavailable to payment-service"},
     }]}
@@ -55,6 +59,8 @@ def test_alertmanager_webhook_persists_and_deduplicates(tmp_path, monkeypatch):
     assert len(store.list()) == 1
     assert first.json()["incidents"][0]["execution_requested"] is False
     assert second.json()["incidents"][0]["incident_id"] == "incident-created-from-alert"
+    assert workflow.last_context[0] == "alertmanager"
+    assert workflow.last_context[1].isoformat() == "2026-08-31T03:00:00+00:00"
 
     payload["status"] = "resolved"
     payload["alerts"][0]["status"] = "resolved"
@@ -216,6 +222,14 @@ class FailedEmbeddings:
         raise RuntimeError("embedding service unavailable")
 
 
+class StaticEmbeddings:
+    def __init__(self, vectors):
+        self.vectors = vectors
+
+    def embed(self, texts):
+        return self.vectors
+
+
 def test_semantic_retriever_adds_fuzzy_match_without_displacing_deterministic_baseline(tmp_path):
     store = IncidentStore(str(tmp_path / "incidents.db"))
     retriever = SemanticKnowledgeRetriever(store, store, FakeEmbeddings(), minimum_similarity=0.8)
@@ -242,3 +256,69 @@ def test_semantic_retriever_falls_back_when_embedding_service_is_unavailable(tmp
     ) == store.retrieve_runbooks(
         "payment-service", "Redis unavailable", "Redis dependency is unavailable"
     )
+
+
+def test_retrieval_quality_metrics_cover_positive_negative_and_regression_cases(tmp_path):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    cases = json.loads((Path(__file__).parent / "fixtures" / "retrieval_cases.json").read_text())
+    correct = false_positives = deterministic_regressions = 0
+    negatives = 0
+
+    for case in cases:
+        matches = store.retrieve_runbooks(case["service"], case["symptom"], case["root_cause"])
+        actual = matches[0].runbook_id if matches else None
+        correct += actual == case["expected_runbook_id"]
+        if case["expected_runbook_id"] is None:
+            negatives += 1
+            false_positives += actual is not None
+        if case.get("deterministic_baseline_score") is not None:
+            deterministic_regressions += not matches or matches[0].score != case["deterministic_baseline_score"]
+
+    metrics = {
+        "top_1_accuracy": correct / len(cases),
+        "false_positive_rate": false_positives / negatives,
+        "deterministic_regression_count": deterministic_regressions,
+    }
+    assert metrics == {
+        "top_1_accuracy": 1.0,
+        "false_positive_rate": 0.0,
+        "deterministic_regression_count": 0,
+    }
+
+
+@pytest.mark.parametrize("vectors", [
+    [[1.0, 0.0]],  # wrong vector count
+    [[1.0, 0.0], [1.0], [1.0], [1.0]],  # dimension mismatch
+    [[float("nan"), 0.0], [1.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
+])
+def test_semantic_vector_anomalies_preserve_deterministic_fallback(tmp_path, vectors):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    retriever = SemanticKnowledgeRetriever(store, store, StaticEmbeddings(vectors))
+    expected = store.retrieve_runbooks(
+        "payment-service", "Redis unavailable", "Redis dependency is unavailable"
+    )
+    assert retriever.retrieve_runbooks(
+        "payment-service", "Redis unavailable", "Redis dependency is unavailable"
+    ) == expected
+
+
+def test_semantic_low_similarity_is_rejected(tmp_path):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    retriever = SemanticKnowledgeRetriever(store, store, StaticEmbeddings([
+        [1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [0.0, 1.0],
+    ]), minimum_similarity=0.8)
+    assert retriever.retrieve_runbooks(
+        "payment-service", "unrelated display issue", "Unknown upstream failure"
+    ) == []
+
+
+def test_embedding_fallback_success_rate_is_complete(tmp_path):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    cases = json.loads((Path(__file__).parent / "fixtures" / "retrieval_cases.json").read_text())
+    retriever = SemanticKnowledgeRetriever(store, store, FailedEmbeddings())
+    successful = sum(
+        retriever.retrieve_runbooks(case["service"], case["symptom"], case["root_cause"])
+        == store.retrieve_runbooks(case["service"], case["symptom"], case["root_cause"])
+        for case in cases
+    )
+    assert successful / len(cases) == 1.0

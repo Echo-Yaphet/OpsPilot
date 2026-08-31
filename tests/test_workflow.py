@@ -1,5 +1,7 @@
-import pytest
+from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from opspilot.models import AnalyzeRequest
 from opspilot.execution import ExecutionPolicy
@@ -51,6 +53,19 @@ class HealthyMetricsWithStaleLogsTools(FakeTools):
             {"metric": {"service": "payment-service", "dependency": "redis"}, "value": [1, "1"]},
             {"metric": {"service": "payment-service", "dependency": "mysql"}, "value": [1, "1"]},
         ]
+
+
+class IncidentTimeTools(FakeTools):
+    metric_at = None
+    log_window = None
+
+    async def query_metric_at(self, query, at=None):
+        self.metric_at = at
+        return await self.query_metric(query)
+
+    async def query_logs_between(self, service, start, end, limit=100):
+        self.log_window = (start, end)
+        return ["level=ERROR redis dependency failed inside incident window"]
 
 
 class FailedExecutor:
@@ -161,6 +176,32 @@ async def test_healthy_metrics_take_precedence_over_stale_error_logs():
     state = await IncidentWorkflow(HealthyMetricsWithStaleLogsTools()).run(AnalyzeRequest())
     assert state.root_cause.startswith("Insufficient evidence")
     assert state.confidence == pytest.approx(0.45)
+
+
+@pytest.mark.asyncio
+async def test_evidence_is_correlated_to_alertmanager_incident_time_without_schema_changes():
+    tools = IncidentTimeTools()
+    request = AnalyzeRequest(service="payment-service", symptom="Redis unavailable")
+    incident_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    request.set_evidence_context(incident_at, "alertmanager")
+
+    state = await IncidentWorkflow(tools).run(request)
+
+    context = next(item for item in state.evidence if item.source == "incident_context")
+    assert tools.metric_at == incident_at
+    assert tools.log_window[0].isoformat() == "2026-08-31T02:58:00+00:00"
+    assert tools.log_window[1].isoformat() == "2026-08-31T03:05:00+00:00"
+    assert context.data["origin"] == "alertmanager"
+    assert context.data["prometheus"] == {
+        "mode": "incident_instant", "query_at": "2026-08-31T03:00:00+00:00",
+        "series_count": 1,
+    }
+    assert context.data["loki"]["line_count"] == 1
+    assert "incident_started_at" not in AnalyzeRequest.model_json_schema()["properties"]
+    assert set(state.model_dump()) == {
+        "incident_id", "service", "symptom", "status", "evidence", "events", "root_cause",
+        "confidence", "recommendations", "execution_requested", "execution_result", "verified",
+    }
 
 
 @pytest.mark.asyncio

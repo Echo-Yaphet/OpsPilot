@@ -3,7 +3,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class AgentName(StrEnum):
@@ -63,6 +63,24 @@ class AnalyzeRequest(BaseModel):
     execute: bool = False
     approved: bool = False
     incident_id: str | None = None
+
+    # Internal collection context. Private attributes keep the public request
+    # and response schemas unchanged while Alertmanager can anchor evidence to
+    # the time at which a firing alert began.
+    _incident_started_at: datetime | None = PrivateAttr(default=None)
+    _evidence_origin: str = PrivateAttr(default="manual")
+
+    def set_evidence_context(self, incident_started_at: datetime, origin: str) -> None:
+        self._incident_started_at = incident_started_at
+        self._evidence_origin = origin
+
+    @property
+    def incident_started_at(self) -> datetime | None:
+        return self._incident_started_at
+
+    @property
+    def evidence_origin(self) -> str:
+        return self._evidence_origin
 
 
 class FaultRequest(BaseModel):
