@@ -252,6 +252,26 @@ async def test_unknown_service_uses_default_verification_policy():
 
 
 @pytest.mark.asyncio
+async def test_verification_resolves_policy_once_per_recovery():
+    class Provider:
+        calls = 0
+
+        def policy_for(self, service):
+            self.calls += 1
+            return VerificationPolicy(max_attempts=2, check_interval_seconds=0)
+
+    provider = Provider()
+    workflow = IncidentWorkflow(
+        FailedVerificationTools(), verification_policy_provider=provider,
+    )
+
+    result = await workflow._poll_recovery("payment-service", "redis")
+
+    assert result["attempts"] == 2
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_healthy_metrics_take_precedence_over_stale_error_logs():
     state = await IncidentWorkflow(HealthyMetricsWithStaleLogsTools()).run(AnalyzeRequest())
     assert state.root_cause.startswith("Insufficient evidence")

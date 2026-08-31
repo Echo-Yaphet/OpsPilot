@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-08-31 (configurable per-service SLO verification milestone)
+Last updated: 2026-08-31 (safe hot-reload SLO policy milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Configurable per-service SLO verification is complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Safe file-backed SLO policy hot reload is complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -58,6 +58,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Alertmanager fingerprint deduplication updates an existing incident instead of creating duplicates.
 - Incident list and detail APIs restore complete `IncidentState` data after Control API restart.
 - Verification Agent performs bounded recovery polling after approved execution and uses validated default plus per-service SLO policies for maximum attempts, interval, service health condition, dependency metric threshold, and consecutive stable checks.
+- A centrally mounted, strict JSON policy document can hot-reload default and per-service SLO overrides without recreating Control API. Reload is content-addressed, retains the last-known-good snapshot after read/parse/validation failures, and exposes read-only status.
+- Each recovery resolves exactly one immutable SLO snapshot before polling, so a concurrent policy update cannot change an incident's verification semantics midway through its attempt budget.
 - The unconfigured policy preserves the original six attempts, two-second interval, healthy service, dependency metric value `1`, and one successful check behavior; partial per-service overrides fall back to those defaults.
 - Verification results retain the original evidence fields and add the effective policy, current stable count, and required stable count without changing `IncidentState` or HTTP schemas.
 - Execution policy accepts only exact `docker compose restart <known-service>` recommendations and rejects command variants or unknown targets with explicit reasons.
@@ -111,6 +113,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
 
 ## Verified
+
+Latest verification for the safe hot-reload SLO policy milestone:
+
+- All 51 backend tests passed in the rebuilt Control API image; new coverage verifies valid content reload, strict unknown-field rejection, invalid-update last-known-good fallback, environment fallback, and exactly one policy resolution per recovery. The only warning remains the LangGraph dependency deprecation notice.
+- Compose validation passed and the rebuilt Control API production image deployed. Updating the mounted policy changed its content revision while the Control API container ID remained unchanged.
+- A live strict policy of two immediate attempts requiring two stable checks correctly ended `verification_failed` after approved Gateway/Proxy Redis restart because Prometheus had not stabilized inside the budget.
+- A subsequent valid update supplied eight attempts at two-second intervals and two stable checks. An invalid replacement requesting one attempt but two stable checks retained that last valid revision, reported the validation error, and the next approved Redis recovery reached `resolved`, `verified=true` on total check four with `stable_checks=2` under the retained eight-attempt policy.
+- Live Redis acceptance retained `dependency_up=0`, RCA confidence `0.92`, recommendation-only non-execution, missing-approval blocking while Redis remained exited, typed approved restart, and deep recovery verification. Default policy content was restored afterward and reload status returned error-free.
+- Runtime security boundaries remained intact: only the Proxy mounts the Docker socket; Gateway missing identity returned 401; one request-bound credential returned 200 then 401 on replay; Proxy missing identity returned 401; its raw Docker route returned 404; Control API still could not resolve the Proxy name.
 
 Latest verification for the configurable per-service SLO milestone:
 
@@ -224,6 +235,7 @@ These results were observed against the running local system, not inferred from 
 
 - `GET /health`
 - `GET /api/v1/system/status`
+- `GET /api/v1/verification-policy/status`
 - `POST /api/v1/incidents/analyze`
 - `GET /api/v1/incidents`
 - `GET /api/v1/incidents/{incident_id}`
@@ -301,7 +313,7 @@ Local entry points:
 - LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
-- Verification policies are static environment configuration loaded at Control API startup; they are not yet centrally managed or hot-reloaded.
+- Policy distribution is a local read-only mounted JSON file with per-process last-known-good state; multi-node distribution, signed policy bundles, coordinated rollout, and durable revision history are not yet implemented.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
 - The local HMAC signing key and Gateway-to-proxy token are statically configured. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs external workload identity/key rotation and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
@@ -365,6 +377,13 @@ Local entry points:
 - Added tests for policy parsing, invalid configuration, service-specific strategies, default fallback, stable recovery, and bounded failure.
 - Revalidated recommendation-only, missing approval, real timeout failure, approved Redis recovery after consecutive stable checks, identity/replay/target/proxy denials, and network isolation.
 
+### Completed: safe hot-reload SLO policy management
+
+- Added a strict, centrally mounted JSON policy document for default and per-service overrides without Control API recreation.
+- Added content-addressed reload, immutable per-recovery snapshots, environment fallback, and last-known-good retention for missing, malformed, unknown-field, or constraint-invalid updates.
+- Added a read-only reload status endpoint without introducing an unauthenticated mutation API.
+- Revalidated strict-budget failure, invalid-update fallback, consecutive-stability recovery, recommendation-only, approval blocking, identity/replay/proxy denials, socket ownership, and network isolation against the live stack.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -372,11 +391,11 @@ Local entry points:
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace the local signing key with externally issued workload identity and key rotation when moving beyond the local stack.
-- Add central policy management and safe hot reload if per-service SLOs need to change without recreating the Control API.
+- Add signed policy bundles, durable revision history, and coordinated multi-node distribution if the local file-backed policy manager moves beyond the single-node stack.
 - Add cAdvisor or equivalent container metrics for the CPU scenario.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 14 services. Configurable per-service SLO verification, the restricted Docker proxy, socket-free Gateway, short-lived request-bound workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone. Keep SLO validation and fallback, consecutive-stability behavior, proxy isolation and fixed routes, identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The current stack has 14 services. Safe file-backed SLO policy hot reload with immutable per-recovery snapshots and last-known-good fallback, configurable per-service verification, the restricted Docker proxy, socket-free Gateway, short-lived request-bound workload credentials with persistent replay prevention, incident-time evidence correlation, expanded retrieval evaluation, optional semantic retrieval with deterministic fallback, persistent incidents, exact execution policy, and separate audit stores are complete. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and the independent policy and human-approval gates. Implement one next production-safety milestone. Keep hot-reload validation/status/last-known-good behavior, SLO fallback and consecutive stability, proxy isolation and fixed routes, identity expiry/audience/binding/replay denials, recommendation-only, missing approval, policy denial, gateway denial/failure, approved Redis recovery, retrieval fallbacks, and both audit stores green. Run `make test`, rebuild affected production images, run `make smoke`, perform relevant live acceptance, and update `PROJECT_STATUS.md` before declaring completion.

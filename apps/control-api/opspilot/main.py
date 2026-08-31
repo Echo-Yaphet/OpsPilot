@@ -7,7 +7,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from .config import settings
+from .config import VerificationPolicyProvider, settings
 from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
@@ -31,6 +31,11 @@ if settings.embedding_base_url and settings.embedding_model:
         ),
         minimum_similarity=settings.semantic_minimum_similarity,
     )
+verification_policy_provider = VerificationPolicyProvider(
+    settings.default_verification_policy(),
+    settings.verification_service_policies,
+    settings.verification_policy_file,
+)
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,
     settings.executor_identity_key,
@@ -42,6 +47,7 @@ workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
 ), knowledge_retriever=knowledge_retriever,
     default_verification_policy=settings.default_verification_policy(),
     verification_policies=settings.verification_policies(),
+    verification_policy_provider=verification_policy_provider,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -54,6 +60,12 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "opspilot-control-api"}
+
+
+@app.get("/api/v1/verification-policy/status")
+async def verification_policy_status():
+    """Expose reload health without allowing unauthenticated policy mutation."""
+    return verification_policy_provider.status()
 
 
 @app.post("/api/v1/incidents/analyze", response_model=IncidentState)

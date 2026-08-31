@@ -1,6 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Literal, Mapping, TypedDict
+from typing import Literal, Mapping, Protocol, TypedDict
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -10,6 +10,10 @@ from .execution import ExecutionPolicy, Executor, PolicyDecision, RestrictedExec
 from .knowledge import KnowledgeRetriever, NoopKnowledgeRetriever
 from .models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
 from .tools import OpsTools
+
+
+class VerificationPolicyResolver(Protocol):
+    def policy_for(self, service: str) -> VerificationPolicy: ...
 
 
 class WorkflowState(TypedDict):
@@ -37,6 +41,7 @@ class IncidentWorkflow:
         knowledge_retriever: KnowledgeRetriever | None = None,
         verification_policies: Mapping[str, VerificationPolicy] | None = None,
         default_verification_policy: VerificationPolicy | None = None,
+        verification_policy_provider: VerificationPolicyResolver | None = None,
     ):
         self.tools = tools
         # Keep the original constructor knobs compatible while moving runtime
@@ -48,6 +53,7 @@ class IncidentWorkflow:
             check_interval_seconds=verification_interval,
         )
         self.verification_policies = dict(verification_policies or {})
+        self.verification_policy_provider = verification_policy_provider
         self.execution_policy = execution_policy or ExecutionPolicy()
         self.executor = executor or RestrictedExecutor(tools)
         self.knowledge_retriever = knowledge_retriever or NoopKnowledgeRetriever()
@@ -301,7 +307,13 @@ class IncidentWorkflow:
 
     async def _poll_recovery(self, service: str, target: str) -> dict:
         """Require the repaired container, service health, and dependency metric to recover."""
-        policy = self.verification_policies.get(service, self.default_verification_policy)
+        # Resolve once so one incident uses an immutable policy snapshot even if
+        # the centrally managed file changes while checks are in progress.
+        policy = (
+            self.verification_policy_provider.policy_for(service)
+            if self.verification_policy_provider
+            else self.verification_policies.get(service, self.default_verification_policy)
+        )
         last = {"container_status": "unknown", "service_healthy": False, "dependency_up": False}
         stable_checks = 0
         for attempt in range(1, policy.max_attempts + 1):

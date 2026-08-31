@@ -123,6 +123,19 @@ VERIFICATION_RECOVERY_STABLE_CHECKS=1
 VERIFICATION_SERVICE_POLICIES={"payment-service":{"max_attempts":8,"recovery_stable_checks":2}}
 ```
 
+Compose 还会把 `infra/opspilot/verification-policies.json` 目录只读挂载到 Control API。运维侧可原子替换该集中策略文件，无需重建或重启容器；文件中的 `defaults` 覆盖环境默认值，`services` 提供按服务覆盖，未声明字段仍按上述回退规则合并：
+
+```json
+{
+  "defaults": {"max_attempts": 8},
+  "services": {
+    "payment-service": {"recovery_stable_checks": 2}
+  }
+}
+```
+
+每次 Verification 在开始时锁定一个不可变策略快照，避免热更新改变正在进行的恢复判定。无效 JSON、未知字段或违反约束的更新不会替换当前策略，而是继续使用最后一次有效版本。`GET /api/v1/verification-policy/status` 可查看当前来源、内容版本、已配置服务和最近一次加载错误；该接口只读，不提供未认证的策略写入能力。
+
 Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject/credential ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 
 ## 事件与持久化 API
