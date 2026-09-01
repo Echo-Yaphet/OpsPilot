@@ -8,7 +8,7 @@ clients:
 scrape_configs:
   - job_name: docker-runtime
     syslog:
-      listen_address: 0.0.0.0:1514
+      listen_address: 127.0.0.1:1515
       listen_protocol: tcp
       idle_timeout: 60s
       syslog_format: rfc5424

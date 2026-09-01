@@ -4,6 +4,7 @@ curl -fsS http://localhost:8080/health
 curl -fsS http://localhost:8001/health
 curl -fsS http://localhost:8002/health
 curl -fsS http://localhost:8003/health
+./scripts/validate-runtime-log-mtls.py
 for service in user-service order-service payment-service; do
   loki_attempt=0
   while [ "$loki_attempt" -lt 10 ]; do

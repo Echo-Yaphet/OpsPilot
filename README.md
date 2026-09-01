@@ -4,7 +4,7 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 `故障注入 → Prometheus/Loki 取证 → RCA → 方案生成 → 安全审查 → 人工审批 → 执行 → 验证`
 
-当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。整个默认栈只有内部受限代理挂载 Docker socket；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。三个业务服务现在都由 Docker logging driver 通过 RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度；Promtail 不再读取宿主 Docker JSON 日志，也不再需要 Proxy 文件发现或 positions 卷。
+当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。整个默认栈只有内部受限代理挂载 Docker socket；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。三个业务服务现在都由 Docker logging driver 通过 mTLS RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度；Promtail 不再读取宿主 Docker JSON 日志，也不再需要 Proxy 文件发现或 positions 卷。
 
 ## 快速启动
 
@@ -16,6 +16,8 @@ make up
 docker compose ps
 make smoke
 ```
+
+`make up` 会先在被 Git 忽略的 `work/runtime-log-pki` 生成本地 CA、服务端证书和三份独立客户端证书；完整材料默认复用，避免普通重启意外轮换身份。直接使用 `docker compose up` 前应先运行 `make runtime-log-pki`。Docker daemon 读取客户端证书时需要绝对宿主路径；项目不在默认目录时，在 `.env` 中把 `RUNTIME_LOG_PKI_DIR` 设置为对应的绝对路径。证书和私钥不会进入镜像或 Git。显式轮换可使用 `RUNTIME_LOG_PKI_FORCE=true make runtime-log-pki`，但必须紧接着重建 Promtail 和三个业务服务；当前本地引导尚不提供生产级无损轮换。
 
 入口：
 
@@ -60,7 +62,7 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> 整个默认栈只有 `docker-proxy` 挂载 Docker socket。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 和日志发现 API 均不可访问。新的容器指标 exporter 无 socket，只能使用本地代理身份读取三个业务容器裁剪后的 CPU 计数器。Gateway 本身也无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。user/order/payment 都通过 Docker 的 RFC5424 syslog driver 转发到 Promtail；Promtail 只挂载自身配置，不再挂载宿主容器日志目录、文件 target 卷或 positions 卷。runtime pipeline counter 保留三个服务的 `compose_service`、`container` 标签和按服务 freshness。本地 TCP 1514 接收器未启用传输认证，仅适用于 Docker Desktop MVP，生产应采用受保护的 runtime transport 或 mTLS。
+> 整个默认栈只有 `docker-proxy` 挂载 Docker socket。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 和日志发现 API 均不可访问。新的容器指标 exporter 无 socket，只能使用本地代理身份读取三个业务容器裁剪后的 CPU 计数器。Gateway 本身也无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。user/order/payment 都通过 Docker 的 mTLS RFC5424 syslog driver 转发到 TCP 1514。Promtail 镜像内的 TLS 网关要求受信客户端证书和允许的服务 CN，验证后只转发到容器回环 `127.0.0.1:1515`；Promtail 进程与网关加载密钥后均以 `nobody` 运行。Promtail 只挂载服务端证书、服务端私钥、CA 公证书及自身配置，不会看到 CA 私钥或客户端私钥，也不挂载宿主容器日志目录、文件 target、positions 卷或 Docker socket。runtime pipeline counter 保留三个服务的 `compose_service`、`container` 标签和按服务 freshness。
 
 ## Gateway workload identity 密钥轮换
 

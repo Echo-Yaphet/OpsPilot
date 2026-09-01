@@ -8,5 +8,8 @@ COPY apps/executor-gateway ./executor-gateway
 COPY apps/docker-proxy ./docker-proxy
 COPY apps/container-metrics-exporter ./container-metrics-exporter
 COPY apps/policy-distributor ./policy-distributor
+COPY apps/promtail ./promtail
+COPY docker-compose.yml .gitignore ./
+COPY infra/loki/promtail-config.yml ./infra/loki/promtail-config.yml
 COPY tests ./tests
 CMD ["uvicorn", "opspilot.main:app", "--host", "0.0.0.0", "--port", "8080"]

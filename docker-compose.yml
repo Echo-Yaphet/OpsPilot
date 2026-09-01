@@ -42,8 +42,12 @@ services:
     logging:
       driver: syslog
       options:
-        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp://host.docker.internal:1514}
+        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp+tls://host.docker.internal:1514}
         syslog-format: rfc5424micro
+        syslog-tls-ca-cert: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/ca.pem
+        syslog-tls-cert: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/user-service-cert.pem
+        syslog-tls-key: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/user-service-key.pem
+        syslog-tls-skip-verify: "false"
         tag: '${COMPOSE_PROJECT_NAME:-opspilot}|user-service'
 
   order-service:
@@ -68,8 +72,12 @@ services:
     logging:
       driver: syslog
       options:
-        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp://host.docker.internal:1514}
+        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp+tls://host.docker.internal:1514}
         syslog-format: rfc5424micro
+        syslog-tls-ca-cert: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/ca.pem
+        syslog-tls-cert: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/order-service-cert.pem
+        syslog-tls-key: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/order-service-key.pem
+        syslog-tls-skip-verify: "false"
         tag: '${COMPOSE_PROJECT_NAME:-opspilot}|order-service'
 
   payment-service:
@@ -94,8 +102,12 @@ services:
     logging:
       driver: syslog
       options:
-        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp://host.docker.internal:1514}
+        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp+tls://host.docker.internal:1514}
         syslog-format: rfc5424micro
+        syslog-tls-ca-cert: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/ca.pem
+        syslog-tls-cert: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/payment-service-cert.pem
+        syslog-tls-key: ${RUNTIME_LOG_PKI_DIR:-/Users/yaphet/code/OpsPilot/work/runtime-log-pki}/payment-service-key.pem
+        syslog-tls-skip-verify: "false"
         tag: '${COMPOSE_PROJECT_NAME:-opspilot}|payment-service'
 
   control-api:
@@ -310,11 +322,15 @@ services:
 
   promtail:
     <<: *service-common
-    image: grafana/promtail:3.5.3
-    command: -config.file=/etc/promtail/config.yml
+    build:
+      context: .
+      dockerfile: apps/promtail/Dockerfile
     ports: ["1514:1514"]
     volumes:
       - ./infra/loki/promtail-config.yml:/etc/promtail/config.yml:ro
+      - ${RUNTIME_LOG_PKI_DIR:-./work/runtime-log-pki}/server-cert.pem:/etc/promtail/pki/server-cert.pem:ro
+      - ${RUNTIME_LOG_PKI_DIR:-./work/runtime-log-pki}/server-key.pem:/etc/promtail/pki/server-key.pem:ro
+      - ${RUNTIME_LOG_PKI_DIR:-./work/runtime-log-pki}/ca.pem:/etc/promtail/pki/ca.pem:ro
     depends_on: [loki]
 
 networks:

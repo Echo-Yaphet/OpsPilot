@@ -10,4 +10,5 @@ loki-data/
 
 
 work/dashboard-init-backup/
+work/runtime-log-pki/
 **/node_modules/

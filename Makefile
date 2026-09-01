@@ -1,7 +1,10 @@
-.PHONY: up down ps logs test smoke dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
+.PHONY: up down ps logs test smoke runtime-log-pki dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
 
-up:
+up: runtime-log-pki
 	docker compose up -d --build
+
+runtime-log-pki:
+	./scripts/generate-runtime-log-pki.sh
 
 down:
 	docker compose down
