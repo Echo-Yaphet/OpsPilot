@@ -3,11 +3,12 @@ import hmac
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import docker
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 
 
 STATUS_TARGETS = frozenset({
@@ -23,6 +24,14 @@ DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 DOCKER_PROJECT = os.getenv("DOCKER_PROXY_PROJECT", "opspilot")
 LOG_DISCOVERY_FILE = os.getenv("DOCKER_PROXY_LOG_DISCOVERY_FILE", "")
 LOG_DISCOVERY_INTERVAL_SECONDS = float(os.getenv("DOCKER_PROXY_LOG_DISCOVERY_INTERVAL_SECONDS", "5"))
+LOG_TARGET_PUBLICATION_UP = 0
+LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP = (
+    Path(LOG_DISCOVERY_FILE).stat().st_mtime
+    if LOG_DISCOVERY_FILE and Path(LOG_DISCOVERY_FILE).is_file()
+    else 0.0
+)
+LOG_TARGET_PUBLICATION_FAILURES = 0
+LOG_TARGET_COUNT = 0
 log = logging.getLogger(__name__)
 
 
@@ -86,16 +95,32 @@ def publish_log_targets(path: str, targets: list[dict]) -> None:
     os.replace(temporary, destination)
 
 
+async def refresh_log_targets_once() -> None:
+    global LOG_TARGET_PUBLICATION_UP
+    global LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP
+    global LOG_TARGET_PUBLICATION_FAILURES
+    global LOG_TARGET_COUNT
+    try:
+        targets = await asyncio.to_thread(discover_log_targets)
+        LOG_TARGET_COUNT = len(targets)
+        if not targets:
+            LOG_TARGET_PUBLICATION_UP = 0
+            LOG_TARGET_PUBLICATION_FAILURES += 1
+            log.warning("no allowlisted log targets discovered; retaining last-known-good file")
+            return
+        await asyncio.to_thread(publish_log_targets, LOG_DISCOVERY_FILE, targets)
+        LOG_TARGET_PUBLICATION_UP = 1
+        LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP = time.time()
+    except Exception:
+        LOG_TARGET_PUBLICATION_UP = 0
+        LOG_TARGET_COUNT = 0
+        LOG_TARGET_PUBLICATION_FAILURES += 1
+        log.exception("failed to refresh allowlisted Promtail log targets")
+
+
 async def refresh_log_targets() -> None:
     while True:
-        try:
-            targets = await asyncio.to_thread(discover_log_targets)
-            if targets:
-                await asyncio.to_thread(publish_log_targets, LOG_DISCOVERY_FILE, targets)
-            else:
-                log.warning("no allowlisted log targets discovered; retaining last-known-good file")
-        except Exception:
-            log.exception("failed to refresh allowlisted Promtail log targets")
+        await refresh_log_targets_once()
         await asyncio.sleep(LOG_DISCOVERY_INTERVAL_SECONDS)
 
 
@@ -119,6 +144,28 @@ app = FastAPI(title="OpsPilot Restricted Docker Proxy", version="0.1.0", lifespa
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "opspilot-docker-proxy"}
+
+
+@app.get("/metrics")
+async def metrics():
+    lines = [
+        "# HELP docker_proxy_log_target_publication_up Whether the latest allowlisted log target publication succeeded.",
+        "# TYPE docker_proxy_log_target_publication_up gauge",
+        f"docker_proxy_log_target_publication_up {LOG_TARGET_PUBLICATION_UP}",
+        "# HELP docker_proxy_log_target_publication_last_success_timestamp_seconds Unix time of the last successful log target publication.",
+        "# TYPE docker_proxy_log_target_publication_last_success_timestamp_seconds gauge",
+        (
+            "docker_proxy_log_target_publication_last_success_timestamp_seconds "
+            f"{LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP:.3f}"
+        ),
+        "# HELP docker_proxy_log_targets Number of allowlisted log targets discovered in the latest attempt.",
+        "# TYPE docker_proxy_log_targets gauge",
+        f"docker_proxy_log_targets {LOG_TARGET_COUNT}",
+        "# HELP docker_proxy_log_target_publication_failures_total Total failed or empty log target publication attempts.",
+        "# TYPE docker_proxy_log_target_publication_failures_total counter",
+        f"docker_proxy_log_target_publication_failures_total {LOG_TARGET_PUBLICATION_FAILURES}",
+    ]
+    return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 @app.get("/v1/containers/{target}/status", dependencies=[Depends(authorize)])

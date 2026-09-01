@@ -36,3 +36,20 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Container CPU metrics are stale for {{ $labels.service }}"
+      - alert: LogTargetPublicationFailed
+        expr: docker_proxy_log_target_publication_up == 0
+        for: 15s
+        labels: {severity: warning}
+        annotations:
+          summary: "Promtail log target publication is failing"
+      - alert: LogTargetsStale
+        expr: (time() - docker_proxy_log_target_publication_last_success_timestamp_seconds > 30) and (docker_proxy_log_target_publication_last_success_timestamp_seconds > 0)
+        labels: {severity: warning}
+        annotations:
+          summary: "Promtail log targets are stale"
+      - alert: LokiLogIngestionStale
+        expr: (up{job="promtail"} == 0) or on() (sum(increase(promtail_sent_entries_total[1m])) == 0)
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: "Loki log ingestion is stale"

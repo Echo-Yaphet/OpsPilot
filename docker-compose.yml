@@ -256,6 +256,7 @@ services:
     volumes:
       - ./infra/prometheus:/etc/prometheus:ro
       - prometheus-data:/prometheus
+    networks: [opspilot, executor-runtime]
 
   alertmanager:
     <<: *service-common
@@ -296,6 +297,7 @@ services:
     volumes:
       - ./infra/loki/promtail-config.yml:/etc/promtail/config.yml:ro
       - promtail-targets:/etc/promtail-targets:ro
+      - promtail-positions:/var/lib/promtail
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     depends_on: [loki, docker-proxy]
 
@@ -314,3 +316,4 @@ volumes:
   control-canary-data: {}
   executor-data: {}
   promtail-targets: {}
+  promtail-positions: {}

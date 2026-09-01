@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import sys
 import types
@@ -155,3 +156,50 @@ def test_proxy_publishes_promtail_targets_atomically(tmp_path, monkeypatch):
         '[{"targets":["localhost"],"labels":{"compose_service":"payment-service"}}]'
     )
     assert not (tmp_path / "targets.json.tmp").exists()
+
+
+def test_proxy_exposes_successful_log_target_publication_metrics(tmp_path, monkeypatch):
+    module, client = load_proxy(monkeypatch)
+    destination = tmp_path / "targets.json"
+    targets = [{"targets": ["localhost"], "labels": {"compose_service": "payment-service"}}]
+    monkeypatch.setattr(module, "LOG_DISCOVERY_FILE", str(destination))
+    monkeypatch.setattr(module, "discover_log_targets", lambda: targets)
+    monkeypatch.setattr(module.time, "time", lambda: 456.0)
+
+    asyncio.run(module.refresh_log_targets_once())
+    response = client.get("/metrics")
+
+    assert response.status_code == 200
+    assert "docker_proxy_log_target_publication_up 1" in response.text
+    assert "docker_proxy_log_target_publication_last_success_timestamp_seconds 456.000" in response.text
+    assert "docker_proxy_log_targets 1" in response.text
+    assert "docker_proxy_log_target_publication_failures_total 0" in response.text
+
+
+def test_proxy_reports_failed_publication_and_retains_last_known_good(tmp_path, monkeypatch):
+    module, client = load_proxy(monkeypatch)
+    destination = tmp_path / "targets.json"
+    destination.write_text('[{"last":"known-good"}]', encoding="utf-8")
+    monkeypatch.setattr(module, "LOG_DISCOVERY_FILE", str(destination))
+    monkeypatch.setattr(module, "discover_log_targets", lambda: [])
+    module.LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP = 123.0
+
+    asyncio.run(module.refresh_log_targets_once())
+    response = client.get("/metrics")
+
+    assert destination.read_text(encoding="utf-8") == '[{"last":"known-good"}]'
+    assert "docker_proxy_log_target_publication_up 0" in response.text
+    assert "docker_proxy_log_target_publication_last_success_timestamp_seconds 123.000" in response.text
+    assert "docker_proxy_log_targets 0" in response.text
+    assert "docker_proxy_log_target_publication_failures_total 1" in response.text
+
+
+def test_proxy_restores_last_known_good_timestamp_after_restart(tmp_path, monkeypatch):
+    destination = tmp_path / "targets.json"
+    destination.write_text('[{"last":"known-good"}]', encoding="utf-8")
+    destination.touch()
+    monkeypatch.setenv("DOCKER_PROXY_LOG_DISCOVERY_FILE", str(destination))
+
+    module, _ = load_proxy(monkeypatch)
+
+    assert module.LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP == destination.stat().st_mtime

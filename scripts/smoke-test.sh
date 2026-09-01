@@ -25,6 +25,30 @@ if [ "$loki_attempt" -eq 10 ]; then
   echo "payment-service logs are unavailable in Loki" >&2
   exit 1
 fi
+log_target_publication=$(curl -fsS -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=docker_proxy_log_target_publication_up == 1')
+case "$log_target_publication" in
+  *'"result":[]'*)
+    echo "Promtail log target publication is unavailable" >&2
+    exit 1
+    ;;
+esac
+fresh_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=time() - docker_proxy_log_target_publication_last_success_timestamp_seconds < 15')
+case "$fresh_log_targets" in
+  *'"result":[]'*)
+    echo "Promtail log targets are stale" >&2
+    exit 1
+    ;;
+esac
+active_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=promtail_targets_active_total == 3')
+case "$active_log_targets" in
+  *'"result":[]'*)
+    echo "Promtail does not have all three log targets active" >&2
+    exit 1
+    ;;
+esac
 container_metrics=$(curl -fsS -G http://localhost:9090/api/v1/query \
   --data-urlencode 'query=container_cpu_metrics_up{service="payment-service"} == 1')
 case "$container_metrics" in
