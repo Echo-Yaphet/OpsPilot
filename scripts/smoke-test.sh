@@ -42,10 +42,18 @@ case "$fresh_log_targets" in
     ;;
 esac
 active_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=promtail_targets_active_total == 3')
+  --data-urlencode 'query=promtail_targets_active_total == 2')
 case "$active_log_targets" in
   *'"result":[]'*)
-    echo "Promtail does not have all three log targets active" >&2
+    echo "Promtail does not have both file log targets active" >&2
+    exit 1
+    ;;
+esac
+file_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=docker_proxy_log_targets == 2')
+case "$file_log_targets" in
+  *'"result":[]'*)
+    echo "Proxy did not narrow file discovery to two services" >&2
     exit 1
     ;;
 esac
@@ -70,6 +78,14 @@ if [ "$service_log_freshness_attempt" -eq 10 ]; then
   echo "per-service Promtail log freshness is unavailable" >&2
   exit 1
 fi
+runtime_forwarding=$(curl -fsS -G http://localhost:9090/api/v1/query \
+  --data-urlencode 'query=increase(promtail_runtime_forwarded_lines_total{compose_service="payment-service"}[1m]) > 0')
+case "$runtime_forwarding" in
+  *'"result":[]'*)
+    echo "payment-service runtime log forwarding is unavailable" >&2
+    exit 1
+    ;;
+esac
 container_metrics=$(curl -fsS -G http://localhost:9090/api/v1/query \
   --data-urlencode 'query=container_cpu_metrics_up{service="payment-service"} == 1')
 case "$container_metrics" in

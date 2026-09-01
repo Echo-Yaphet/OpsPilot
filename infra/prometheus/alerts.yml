@@ -66,6 +66,17 @@ groups:
           (
             max by (service) (docker_proxy_log_target_info) * 0
           )
+          or
+          max by (service) (
+            label_replace(
+              sum by (compose_service) (
+                increase(promtail_runtime_forwarded_lines_total[1m])
+              ) > bool 0,
+              "service", "$1", "compose_service", "(.+)"
+            )
+            or
+            label_replace(vector(0), "service", "payment-service", "", "")
+          )
       - alert: ServiceLogCollectionStale
         expr: opspilot_service_log_read_fresh == 0
         for: 30s

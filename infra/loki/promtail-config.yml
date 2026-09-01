@@ -9,10 +9,39 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
-  - job_name: docker
+  - job_name: docker-file
     file_sd_configs:
       - files:
           - /etc/promtail-targets/*.json
         refresh_interval: 5s
     pipeline_stages:
       - docker: {}
+  - job_name: docker-runtime
+    syslog:
+      listen_address: 0.0.0.0:1514
+      listen_protocol: tcp
+      idle_timeout: 60s
+      syslog_format: rfc5424
+      use_incoming_timestamp: true
+    relabel_configs:
+      - source_labels: [__syslog_message_app_name]
+        regex: '([^|]+)\|(user-service|order-service|payment-service)'
+        action: keep
+      - source_labels: [__syslog_message_app_name]
+        regex: '([^|]+)\|(user-service|order-service|payment-service)'
+        target_label: compose_service
+        replacement: '${2}'
+      - source_labels: [__syslog_message_app_name]
+        regex: '([^|]+)\|(user-service|order-service|payment-service)'
+        target_label: container
+        replacement: '/${1}-${2}-1'
+    pipeline_stages:
+      - metrics:
+          runtime_forwarded_lines_total:
+            type: Counter
+            description: Runtime-forwarded Docker log lines received by Promtail.
+            prefix: promtail_
+            max_idle_duration: 24h
+            config:
+              match_all: true
+              action: inc

@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-01 (per-service log freshness milestone)
+Last updated: 2026-09-01 (payment-service runtime log forwarding milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Promtail now persists positions across recreation; Proxy publication, stack-level Loki ingestion, and per-service Promtail read freshness have explicit metrics and alerts. Continue by replacing the host Docker log-directory mount with runtime-level forwarding while keeping these signals and the CPU/Redis incident flows green.
+4. `payment-service` now forwards Docker logs at runtime to Promtail over RFC5424 syslog, while `user-service` and `order-service` retain the file/positions path during the staged migration. Continue by migrating those two services, then remove Promtail's host Docker log-directory and Proxy log-discovery mounts while keeping the existing labels, freshness signals, and CPU/Redis incident flows green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -37,8 +37,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Prometheus scraping all three applications every five seconds.
 - Prometheus rules for Redis down, MySQL down, sustained per-service container CPU usage, exporter loss, target collection failures, and stale CPU samples.
 - A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage, collection health, last-success time, and strictly validated per-service alert thresholds.
-- Loki and Promtail collect the three business services' Docker JSON logs through an atomic, Proxy-published file-discovery target set. Promtail retains the existing Loki labels without Docker socket access.
-- Promtail positions persist in a dedicated named volume. The Proxy exports publication health plus a last-known-good `path`-to-`service` mapping; Prometheus joins that mapping to Promtail's native per-file read counters and records per-service freshness while retaining publication, target-staleness, and stack-level Loki-ingestion alerts.
+- Loki and Promtail collect `payment-service` through Docker runtime RFC5424 syslog forwarding and collect `user-service` plus `order-service` through the existing atomic Proxy-published file targets. Both paths retain the existing `compose_service` and `container` Loki labels without giving Promtail Docker socket access.
+- Promtail positions persist for the two remaining file targets in a dedicated named volume. Prometheus combines Proxy path/read counters with a label-preserving Promtail runtime counter to record per-service freshness across both transports while retaining publication, target-staleness, and stack-level Loki-ingestion alerts.
 - Grafana has provisioned Prometheus and Loki data sources.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
 
@@ -78,7 +78,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - A typed `ExecutionAction` and `RestrictedExecutor` form a narrow gateway seam that exposes restart operations rather than arbitrary shell execution.
 - Policy allow and deny decisions are included in incident evidence and normalized into the SQLite `policy_decisions` audit table.
 - Policy approval does not replace human approval: medium-risk restart requires both `execute=true` and `approved=true` before the restricted executor is called.
-- Across the default stack, the Docker socket is mounted only into the internal restricted proxy. Control API, executor gateway, the metrics exporter, and Promtail have no socket access. The Proxy discovers only the current Compose project's three business services and atomically publishes their derived JSON log paths into a dedicated volume; Promtail mounts that target volume and the host container-log directory read-only.
+- Across the default stack, the Docker socket is mounted only into the internal restricted proxy. Control API, executor gateway, the metrics exporter, and Promtail have no socket access. The Proxy now publishes derived JSON log paths only for `user-service` and `order-service`; `payment-service` uses its Docker logging driver to forward directly to Promtail. Promtail retains the target volume and read-only host container-log directory only for the two services not yet migrated.
 - The gateway accepts typed `restart_container` and `stop_container` requests only, applies operation-specific target allowlists, and never accepts shell commands.
 - The gateway image no longer contains the Docker SDK; it calls fixed status, restart, and stop proxy routes over a dedicated internal network.
 - The proxy has no host port, is not attached to the Control API network, independently enforces operation-specific target allowlists, and exposes no raw Docker API routes. Its read-only stats route is limited to the three business services and returns only CPU counters needed by the exporter.
@@ -129,6 +129,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the payment-service runtime log forwarding milestone:
+
+- The rebuilt current-source test image passed all 94 backend tests; the only warning remains the existing LangGraph dependency deprecation notice. New coverage verifies that Proxy file discovery can be narrowed to the non-migrated services without weakening its strict supported-service allowlist.
+- Compose, real Promtail 3.5.3 syntax, and `promtool` validation passed with 11 healthy rules. The 15-service stack deployed with exactly two file targets plus the RFC5424 receiver; enhanced smoke proved Proxy target count `2`, payment runtime counter growth, Loki availability, and freshness `1` for all three services.
+- Docker inspection confirmed `payment-service` uses the `syslog` logging driver at `tcp://host.docker.internal:1514`. Loki retained `compose_service="payment-service"` and `container="/opspilot-payment-service-1"`; Promtail reported no parsing errors after the final short RFC5424 tag was deployed.
+- Stopping only `payment-service` made its runtime-derived freshness become `0` while user/order remained `1`, fired `ServiceLogCollectionStale`, and created recommendation-only incident `5417b733-64c4-4086-b764-a6dd7d21ecbc` with no execution or Verification. Starting it restored freshness `1`, cleared the alert, and updated the same incident to `alert_resolved`.
+- The named positions volume retained and advanced user/order offsets around 7.50 MB across forced Promtail recreation. Promtail sought to the persisted offsets rather than zero, payment runtime forwarding reconnected, and the post-recreation syslog parsing-error counter remained `0`.
+- A bounded payment CPU fault reached about `1.002` cores, fired and resolved `ContainerHighCPU`, and persisted only a confidence-`0.9` recommendation incident. A real Redis outage produced `dependency_up=0`, recommendation-only non-execution, and `awaiting_approval` while Redis remained exited; explicit approval restarted Redis through Gateway/Proxy and reached `resolved`, `verified=true` on verification attempt four under the default unsigned policy.
+- Gateway returned 401 without identity, 200 once then 401 on replay, and 403 for an authenticated unknown target. Proxy returned 401 without identity, 404 for the raw Docker route, and 403 for an unknown target; Control API could not resolve the isolated Proxy. Only Proxy mounted the Docker socket. Final Compose/runtime checks and smoke passed with no firing alerts.
 
 Latest verification for the per-service log freshness milestone:
 
@@ -425,7 +435,7 @@ Local entry points:
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation now uses real Docker counters with strict per-service thresholds and health/staleness alerts, but the local exporter still polls on scrape, covers only the three business services, uses the local shared proxy token, and requires recreation to change targets or thresholds. Last-success timestamps are process-local and reset when the exporter restarts.
-- Promtail no longer mounts the Docker socket, receives only three allowlisted file-discovery targets from the Proxy, persists positions in a named volume, and has publication, stack-level ingestion, and per-service read-freshness metrics and alerts. It still mounts the host container-log directory read-only; production should use runtime-level forwarding or enforce narrower filesystem visibility. Per-service freshness proves Promtail consumed each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
+- Promtail no longer mounts the Docker socket. `payment-service` now uses runtime RFC5424 forwarding with label-preserving Promtail metrics; user/order still use two allowlisted Proxy file targets and persisted positions. Promtail therefore still mounts the host container-log directory read-only until those two services migrate. The local syslog receiver is published on TCP 1514 without transport authentication for the Docker Desktop MVP; production should use protected runtime transport or mTLS. Per-service freshness proves Promtail consumed each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
@@ -562,6 +572,13 @@ Local entry points:
 - Strengthened smoke to generate traffic and require fresh signals for exactly the three business services.
 - Revalidated isolated per-service firing/resolution, Alertmanager recommendation-only handling, live CPU and Redis flows, Gateway identity/replay/target denials, Proxy raw-route denial, network isolation, and sole socket ownership.
 
+### Completed: payment-service runtime log forwarding
+
+- Migrated `payment-service` from the host Docker JSON-log path to the Docker syslog logging driver and Promtail's RFC5424 receiver without adding a service or changing Loki query labels.
+- Narrowed Proxy file discovery to user/order, retained their atomic last-known-good target publication and persistent positions, and exported a label-preserving Promtail runtime counter for the migrated service.
+- Combined file-read and runtime-receive counters behind the existing `opspilot_service_log_read_fresh` recording rule and kept `ServiceLogCollectionStale`, stack-level Loki sending, Alertmanager non-execution, and all public/workflow contracts unchanged.
+- Revalidated runtime logging driver state, Loki labels, isolated payment freshness firing/resolution, file offset continuity plus runtime reconnect across Promtail recreation, CPU/Redis flows, Gateway/Proxy denials, network isolation, socket ownership, Compose, smoke, and the complete test suite.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -570,10 +587,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
-- Replace the host-wide Docker log mount with runtime-level forwarding while preserving per-service freshness and the existing Loki labels before expanding log coverage beyond the three business services.
+- Migrate user/order to the validated runtime forwarding path, then remove the host-wide Docker log mount, Proxy log-target publication, and the now-unused file positions path while preserving per-service freshness and existing Loki labels before expanding log coverage.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Promtail no longer mounts the Docker socket: the sole socket-owning Proxy atomically publishes file-discovery targets for only the current Compose project's three business services, preserving existing Loki labels and incident evidence. Promtail positions persist in a named volume; Proxy publication health and stack-level Loki sending remain monitored, while `opspilot_service_log_read_fresh` and `ServiceLogCollectionStale` expose per-service Promtail consumption through the Proxy's last-known-good path/service mapping. Real CPU metrics use strict exported per-service thresholds; all Alertmanager handling remains recommendation-only. Signed bundles, durable rollback protection, authenticated rollout observation, Gateway identity rotation, the restricted Docker proxy, incident-time correlation, retrieval, persistence, execution policy, and audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Next, replace the host-wide Docker log mount with runtime-level forwarding while preserving per-service freshness and existing Loki labels, then run the full deployment and live acceptance set before completing that node.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `git status --short --branch`, `docker compose ps`, `docker compose config --quiet`, and `make smoke`. The default stack has 15 services; the persistent primary Verification-policy history has accepted signed revision 104. `payment-service` now uses Docker runtime RFC5424 forwarding to Promtail, while Proxy file discovery and persisted positions remain only for user/order. Existing `compose_service`/`container` Loki labels, three-service `opspilot_service_log_read_fresh`, `ServiceLogCollectionStale`, and stack-level Loki sending remain green. All Alertmanager handling is recommendation-only; policy allowlisting and explicit human approval remain independent. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence formats, Gateway/Proxy isolation, and the protected IDE/system files. Next migrate user/order to runtime forwarding, then remove Promtail's host Docker log-directory and Proxy file-discovery mounts; rerun the full tests, deployment, log/CPU/Redis/security acceptance, update docs, and do not push unless explicitly requested.

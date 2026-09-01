@@ -54,8 +54,12 @@ class FakeContainerCollection:
         return self.services.get(service_label.split("=", 1)[1], [])
 
 
-def load_proxy(monkeypatch):
+def load_proxy(monkeypatch, log_targets=None):
     monkeypatch.setenv("DOCKER_PROXY_TOKEN", "test-proxy-token")
+    if log_targets is None:
+        monkeypatch.delenv("DOCKER_PROXY_LOG_TARGETS", raising=False)
+    else:
+        monkeypatch.setenv("DOCKER_PROXY_LOG_TARGETS", log_targets)
     fake_docker = types.SimpleNamespace(DockerClient=lambda **kwargs: None)
     monkeypatch.setitem(sys.modules, "docker", fake_docker)
     path = Path("/app/docker-proxy/app.py")
@@ -143,6 +147,32 @@ def test_proxy_discovers_only_allowlisted_project_log_targets(monkeypatch):
     )
     assert {label.split("=", 1)[1] for request in containers.filters for label in request["label"]
             if label.startswith("com.docker.compose.service=")} == module.LOG_TARGETS
+
+
+def test_proxy_supports_incremental_runtime_log_forwarding(monkeypatch):
+    module, _ = load_proxy(monkeypatch, "user-service,order-service")
+
+    containers = FakeContainerCollection({
+        "payment-service": [FakeDiscoveredContainer("payment-id", "opspilot-payment-service-1")],
+        "order-service": [FakeDiscoveredContainer("order-id", "opspilot-order-service-1")],
+        "user-service": [FakeDiscoveredContainer("user-id", "opspilot-user-service-1")],
+    })
+    monkeypatch.setattr(
+        module.docker,
+        "DockerClient",
+        lambda **kwargs: types.SimpleNamespace(containers=containers),
+    )
+
+    targets = module.discover_log_targets()
+
+    assert module.LOG_TARGETS == frozenset({"user-service", "order-service"})
+    assert {target["labels"]["compose_service"] for target in targets} == {
+        "user-service", "order-service",
+    }
+    assert all(
+        "com.docker.compose.service=payment-service" not in request["label"]
+        for request in containers.filters
+    )
 
 
 def test_proxy_publishes_promtail_targets_atomically(tmp_path, monkeypatch):

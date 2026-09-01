@@ -18,12 +18,31 @@ STATUS_TARGETS = frozenset({
 RESTART_TARGETS = frozenset({"redis", "mysql", "user-service", "order-service", "payment-service"})
 STOP_TARGETS = frozenset({"redis", "mysql"})
 STATS_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
-LOG_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
+SUPPORTED_LOG_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
 PROXY_TOKEN = os.getenv("DOCKER_PROXY_TOKEN", "")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 DOCKER_PROJECT = os.getenv("DOCKER_PROXY_PROJECT", "opspilot")
 LOG_DISCOVERY_FILE = os.getenv("DOCKER_PROXY_LOG_DISCOVERY_FILE", "")
 LOG_DISCOVERY_INTERVAL_SECONDS = float(os.getenv("DOCKER_PROXY_LOG_DISCOVERY_INTERVAL_SECONDS", "5"))
+
+
+def configured_log_targets(raw: str) -> frozenset[str]:
+    targets = frozenset(target.strip() for target in raw.split(",") if target.strip())
+    if not targets:
+        raise RuntimeError("DOCKER_PROXY_LOG_TARGETS must configure at least one service")
+    unsupported = targets - SUPPORTED_LOG_TARGETS
+    if unsupported:
+        raise RuntimeError(
+            "DOCKER_PROXY_LOG_TARGETS contains unsupported services: "
+            + ", ".join(sorted(unsupported))
+        )
+    return targets
+
+
+LOG_TARGETS = configured_log_targets(os.getenv(
+    "DOCKER_PROXY_LOG_TARGETS",
+    ",".join(sorted(SUPPORTED_LOG_TARGETS)),
+))
 LOG_TARGET_PUBLICATION_UP = 0
 LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP = (
     Path(LOG_DISCOVERY_FILE).stat().st_mtime

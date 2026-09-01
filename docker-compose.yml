@@ -76,6 +76,13 @@ services:
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
+      promtail: {condition: service_started}
+    logging:
+      driver: syslog
+      options:
+        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp://host.docker.internal:1514}
+        syslog-format: rfc5424micro
+        tag: '${COMPOSE_PROJECT_NAME:-opspilot}|payment-service'
 
   control-api:
     <<: *service-common
@@ -204,6 +211,7 @@ services:
       DOCKER_PROXY_PROJECT: ${COMPOSE_PROJECT_NAME:-opspilot}
       DOCKER_PROXY_LOG_DISCOVERY_FILE: /log-discovery/targets.json
       DOCKER_PROXY_LOG_DISCOVERY_INTERVAL_SECONDS: 5
+      DOCKER_PROXY_LOG_TARGETS: user-service,order-service
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - promtail-targets:/log-discovery
@@ -294,6 +302,7 @@ services:
     <<: *service-common
     image: grafana/promtail:3.5.3
     command: -config.file=/etc/promtail/config.yml
+    ports: ["1514:1514"]
     volumes:
       - ./infra/loki/promtail-config.yml:/etc/promtail/config.yml:ro
       - promtail-targets:/etc/promtail-targets:ro
