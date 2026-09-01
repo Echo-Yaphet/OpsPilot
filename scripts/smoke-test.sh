@@ -4,59 +4,29 @@ curl -fsS http://localhost:8080/health
 curl -fsS http://localhost:8001/health
 curl -fsS http://localhost:8002/health
 curl -fsS http://localhost:8003/health
-loki_attempt=0
-while [ "$loki_attempt" -lt 10 ]; do
-  payment_logs=$(curl -fsS -G http://localhost:3100/loki/api/v1/query_range \
-    --data-urlencode 'query={compose_service="payment-service"}' \
-    --data-urlencode 'limit=1' \
-    --data-urlencode 'direction=backward' \
-    --data-urlencode 'since=5m')
-  case "$payment_logs" in
-    *'"result":[]'*)
-      loki_attempt=$((loki_attempt + 1))
-      sleep 2
-      ;;
-    *)
-      break
-      ;;
-  esac
+for service in user-service order-service payment-service; do
+  loki_attempt=0
+  while [ "$loki_attempt" -lt 10 ]; do
+    service_logs=$(curl -fsS -G http://localhost:3100/loki/api/v1/query_range \
+      --data-urlencode "query={compose_service=\"$service\"}" \
+      --data-urlencode 'limit=1' \
+      --data-urlencode 'direction=backward' \
+      --data-urlencode 'since=5m')
+    case "$service_logs" in
+      *'"result":[]'*)
+        loki_attempt=$((loki_attempt + 1))
+        sleep 2
+        ;;
+      *)
+        break
+        ;;
+    esac
+  done
+  if [ "$loki_attempt" -eq 10 ]; then
+    echo "$service logs are unavailable in Loki" >&2
+    exit 1
+  fi
 done
-if [ "$loki_attempt" -eq 10 ]; then
-  echo "payment-service logs are unavailable in Loki" >&2
-  exit 1
-fi
-log_target_publication=$(curl -fsS -G http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=docker_proxy_log_target_publication_up == 1')
-case "$log_target_publication" in
-  *'"result":[]'*)
-    echo "Promtail log target publication is unavailable" >&2
-    exit 1
-    ;;
-esac
-fresh_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=time() - docker_proxy_log_target_publication_last_success_timestamp_seconds < 15')
-case "$fresh_log_targets" in
-  *'"result":[]'*)
-    echo "Promtail log targets are stale" >&2
-    exit 1
-    ;;
-esac
-active_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=promtail_targets_active_total == 2')
-case "$active_log_targets" in
-  *'"result":[]'*)
-    echo "Promtail does not have both file log targets active" >&2
-    exit 1
-    ;;
-esac
-file_log_targets=$(curl -fsS -G http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=docker_proxy_log_targets == 2')
-case "$file_log_targets" in
-  *'"result":[]'*)
-    echo "Proxy did not narrow file discovery to two services" >&2
-    exit 1
-    ;;
-esac
 service_log_freshness_attempt=0
 while [ "$service_log_freshness_attempt" -lt 10 ]; do
   curl -fsS http://localhost:8001/health >/dev/null
@@ -79,10 +49,10 @@ if [ "$service_log_freshness_attempt" -eq 10 ]; then
   exit 1
 fi
 runtime_forwarding=$(curl -fsS -G http://localhost:9090/api/v1/query \
-  --data-urlencode 'query=increase(promtail_runtime_forwarded_lines_total{compose_service="payment-service"}[1m]) > 0')
+  --data-urlencode 'query=count(increase(promtail_runtime_forwarded_lines_total{compose_service=~"user-service|order-service|payment-service"}[1m]) > 0) == 3')
 case "$runtime_forwarding" in
   *'"result":[]'*)
-    echo "payment-service runtime log forwarding is unavailable" >&2
+    echo "three-service runtime log forwarding is unavailable" >&2
     exit 1
     ;;
 esac

@@ -36,17 +36,6 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Container CPU metrics are stale for {{ $labels.service }}"
-      - alert: LogTargetPublicationFailed
-        expr: docker_proxy_log_target_publication_up == 0
-        for: 15s
-        labels: {severity: warning}
-        annotations:
-          summary: "Promtail log target publication is failing"
-      - alert: LogTargetsStale
-        expr: (time() - docker_proxy_log_target_publication_last_success_timestamp_seconds > 30) and (docker_proxy_log_target_publication_last_success_timestamp_seconds > 0)
-        labels: {severity: warning}
-        annotations:
-          summary: "Promtail log targets are stale"
       - alert: LokiLogIngestionStale
         expr: (up{job="promtail"} == 0) or on() (sum(increase(promtail_sent_entries_total[1m])) == 0)
         for: 30s
@@ -55,18 +44,6 @@ groups:
           summary: "Loki log ingestion is stale"
       - record: opspilot_service_log_read_fresh
         expr: |
-          (
-            sum by (service) (
-              increase(promtail_read_lines_total[1m])
-              * on (path) group_left(service)
-                docker_proxy_log_target_info
-            ) > bool 0
-          )
-          or
-          (
-            max by (service) (docker_proxy_log_target_info) * 0
-          )
-          or
           max by (service) (
             label_replace(
               sum by (compose_service) (
@@ -74,6 +51,10 @@ groups:
               ) > bool 0,
               "service", "$1", "compose_service", "(.+)"
             )
+            or
+            label_replace(vector(0), "service", "user-service", "", "")
+            or
+            label_replace(vector(0), "service", "order-service", "", "")
             or
             label_replace(vector(0), "service", "payment-service", "", "")
           )

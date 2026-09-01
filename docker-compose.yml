@@ -38,6 +38,13 @@ services:
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
+      promtail: {condition: service_started}
+    logging:
+      driver: syslog
+      options:
+        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp://host.docker.internal:1514}
+        syslog-format: rfc5424micro
+        tag: '${COMPOSE_PROJECT_NAME:-opspilot}|user-service'
 
   order-service:
     <<: *service-common
@@ -57,6 +64,13 @@ services:
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
+      promtail: {condition: service_started}
+    logging:
+      driver: syslog
+      options:
+        syslog-address: ${PROMTAIL_SYSLOG_ADDRESS:-tcp://host.docker.internal:1514}
+        syslog-format: rfc5424micro
+        tag: '${COMPOSE_PROJECT_NAME:-opspilot}|order-service'
 
   payment-service:
     <<: *service-common
@@ -209,12 +223,8 @@ services:
       DOCKER_HOST: unix:///var/run/docker.sock
       DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
       DOCKER_PROXY_PROJECT: ${COMPOSE_PROJECT_NAME:-opspilot}
-      DOCKER_PROXY_LOG_DISCOVERY_FILE: /log-discovery/targets.json
-      DOCKER_PROXY_LOG_DISCOVERY_INTERVAL_SECONDS: 5
-      DOCKER_PROXY_LOG_TARGETS: user-service,order-service
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - promtail-targets:/log-discovery
     networks: [executor-runtime]
 
   container-metrics-exporter:
@@ -305,10 +315,7 @@ services:
     ports: ["1514:1514"]
     volumes:
       - ./infra/loki/promtail-config.yml:/etc/promtail/config.yml:ro
-      - promtail-targets:/etc/promtail-targets:ro
-      - promtail-positions:/var/lib/promtail
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-    depends_on: [loki, docker-proxy]
+    depends_on: [loki]
 
 networks:
   opspilot: {}
@@ -324,5 +331,3 @@ volumes:
   control-data: {}
   control-canary-data: {}
   executor-data: {}
-  promtail-targets: {}
-  promtail-positions: {}
