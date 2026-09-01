@@ -34,6 +34,25 @@ class FakeContainer:
         }
 
 
+class FakeDiscoveredContainer:
+    def __init__(self, container_id, name):
+        self.id = container_id
+        self.name = name
+
+
+class FakeContainerCollection:
+    def __init__(self, services):
+        self.services = services
+        self.filters = []
+
+    def list(self, *, all, filters):
+        assert all is True
+        self.filters.append(filters)
+        labels = filters["label"]
+        service_label = next(label for label in labels if label.startswith("com.docker.compose.service="))
+        return self.services.get(service_label.split("=", 1)[1], [])
+
+
 def load_proxy(monkeypatch):
     monkeypatch.setenv("DOCKER_PROXY_TOKEN", "test-proxy-token")
     fake_docker = types.SimpleNamespace(DockerClient=lambda **kwargs: None)
@@ -83,3 +102,56 @@ def test_proxy_allows_only_fixed_operations_and_targets(monkeypatch):
     assert client.post("/v1/containers/payment-service/stop", headers=auth()).status_code == 403
     assert client.post("/v1/containers/unknown/restart", headers=auth()).status_code == 403
     assert client.get("/v1/containers/redis/stats", headers=auth()).status_code == 403
+
+
+def test_proxy_discovers_only_allowlisted_project_log_targets(monkeypatch):
+    module, _ = load_proxy(monkeypatch)
+    containers = FakeContainerCollection({
+        "payment-service": [FakeDiscoveredContainer("payment-id", "opspilot-payment-service-1")],
+        "user-service": [FakeDiscoveredContainer("user-id", "opspilot-user-service-1")],
+    })
+    monkeypatch.setattr(
+        module.docker,
+        "DockerClient",
+        lambda **kwargs: types.SimpleNamespace(containers=containers),
+    )
+
+    targets = module.discover_log_targets()
+
+    assert targets == [
+        {
+            "targets": ["localhost"],
+            "labels": {
+                "__path__": "/var/lib/docker/containers/payment-id/payment-id-json.log",
+                "compose_service": "payment-service",
+                "container": "/opspilot-payment-service-1",
+            },
+        },
+        {
+            "targets": ["localhost"],
+            "labels": {
+                "__path__": "/var/lib/docker/containers/user-id/user-id-json.log",
+                "compose_service": "user-service",
+                "container": "/opspilot-user-service-1",
+            },
+        },
+    ]
+    assert all(
+        "com.docker.compose.project=opspilot" in request["label"]
+        for request in containers.filters
+    )
+    assert {label.split("=", 1)[1] for request in containers.filters for label in request["label"]
+            if label.startswith("com.docker.compose.service=")} == module.LOG_TARGETS
+
+
+def test_proxy_publishes_promtail_targets_atomically(tmp_path, monkeypatch):
+    module, _ = load_proxy(monkeypatch)
+    destination = tmp_path / "targets.json"
+    targets = [{"targets": ["localhost"], "labels": {"compose_service": "payment-service"}}]
+
+    module.publish_log_targets(str(destination), targets)
+
+    assert destination.read_text(encoding="utf-8") == (
+        '[{"targets":["localhost"],"labels":{"compose_service":"payment-service"}}]'
+    )
+    assert not (tmp_path / "targets.json.tmp").exists()

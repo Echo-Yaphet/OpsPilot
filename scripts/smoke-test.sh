@@ -4,6 +4,27 @@ curl -fsS http://localhost:8080/health
 curl -fsS http://localhost:8001/health
 curl -fsS http://localhost:8002/health
 curl -fsS http://localhost:8003/health
+loki_attempt=0
+while [ "$loki_attempt" -lt 10 ]; do
+  payment_logs=$(curl -fsS -G http://localhost:3100/loki/api/v1/query_range \
+    --data-urlencode 'query={compose_service="payment-service"}' \
+    --data-urlencode 'limit=1' \
+    --data-urlencode 'direction=backward' \
+    --data-urlencode 'since=5m')
+  case "$payment_logs" in
+    *'"result":[]'*)
+      loki_attempt=$((loki_attempt + 1))
+      sleep 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+if [ "$loki_attempt" -eq 10 ]; then
+  echo "payment-service logs are unavailable in Loki" >&2
+  exit 1
+fi
 container_metrics=$(curl -fsS -G http://localhost:9090/api/v1/query \
   --data-urlencode 'query=container_cpu_metrics_up{service="payment-service"} == 1')
 case "$container_metrics" in

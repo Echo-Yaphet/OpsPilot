@@ -201,8 +201,12 @@ services:
     environment:
       DOCKER_HOST: unix:///var/run/docker.sock
       DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
+      DOCKER_PROXY_PROJECT: ${COMPOSE_PROJECT_NAME:-opspilot}
+      DOCKER_PROXY_LOG_DISCOVERY_FILE: /log-discovery/targets.json
+      DOCKER_PROXY_LOG_DISCOVERY_INTERVAL_SECONDS: 5
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-targets:/log-discovery
     networks: [executor-runtime]
 
   container-metrics-exporter:
@@ -291,9 +295,9 @@ services:
     command: -config.file=/etc/promtail/config.yml
     volumes:
       - ./infra/loki/promtail-config.yml:/etc/promtail/config.yml:ro
+      - promtail-targets:/etc/promtail-targets:ro
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    depends_on: [loki]
+    depends_on: [loki, docker-proxy]
 
 networks:
   opspilot: {}
@@ -309,3 +313,4 @@ volumes:
   control-data: {}
   control-canary-data: {}
   executor-data: {}
+  promtail-targets: {}

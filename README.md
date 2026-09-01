@@ -4,7 +4,7 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 `故障注入 → Prometheus/Loki 取证 → RCA → 方案生成 → 安全审查 → 人工审批 → 执行 → 验证`
 
-当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。在控制、执行和容器指标路径中，Docker socket 只挂载到内部受限代理；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。Promtail 仍保留既有的 Docker 日志发现 socket 挂载，不参与执行或 CPU 指标路径。
+当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。整个默认栈只有内部受限代理挂载 Docker socket；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。该代理还把三个业务服务的白名单日志目标原子发布到专用共享卷，Promtail 通过只读文件发现采集日志，不再访问 Docker socket。
 
 ## 快速启动
 
@@ -60,7 +60,7 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> 在控制、执行和容器指标路径中，Docker socket 仅挂载到 `docker-proxy`。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 不可访问。新的容器指标 exporter 无 socket，只能使用本地代理身份读取三个业务容器裁剪后的 CPU 计数器。Gateway 本身也无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。Promtail 的既有 socket 挂载只用于日志服务发现，但仍是生产加固时应移除或替换的独立权限边界。默认共享签名密钥和代理 token 仅适用于本地 MVP，生产环境仍应接入外部 workload identity 以及操作系统级的运行时权限隔离。
+> 整个默认栈只有 `docker-proxy` 挂载 Docker socket。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 和日志发现 API 均不可访问。新的容器指标 exporter 无 socket，只能使用本地代理身份读取三个业务容器裁剪后的 CPU 计数器。Gateway 本身也无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。Proxy 在内部将限定为当前 Compose 项目、三个业务服务的容器 ID 与 JSON 日志路径原子写入专用卷；Promtail 只读该文件和宿主日志目录，保留原有 `compose_service`、`container` 标签与 Loki 查询兼容性。默认共享签名密钥和代理 token 仅适用于本地 MVP；宿主日志目录仍是较宽的只读边界，生产环境应继续采用运行时级日志转发或更细粒度的文件隔离。
 
 ## Gateway workload identity 密钥轮换
 

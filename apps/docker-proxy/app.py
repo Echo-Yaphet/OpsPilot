@@ -1,5 +1,10 @@
+import asyncio
 import hmac
+import json
+import logging
 import os
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 import docker
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -12,8 +17,13 @@ STATUS_TARGETS = frozenset({
 RESTART_TARGETS = frozenset({"redis", "mysql", "user-service", "order-service", "payment-service"})
 STOP_TARGETS = frozenset({"redis", "mysql"})
 STATS_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
+LOG_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
 PROXY_TOKEN = os.getenv("DOCKER_PROXY_TOKEN", "")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+DOCKER_PROJECT = os.getenv("DOCKER_PROXY_PROJECT", "opspilot")
+LOG_DISCOVERY_FILE = os.getenv("DOCKER_PROXY_LOG_DISCOVERY_FILE", "")
+LOG_DISCOVERY_INTERVAL_SECONDS = float(os.getenv("DOCKER_PROXY_LOG_DISCOVERY_INTERVAL_SECONDS", "5"))
+log = logging.getLogger(__name__)
 
 
 def authorize(authorization: str | None = Header(None)) -> None:
@@ -24,7 +34,10 @@ def authorize(authorization: str | None = Header(None)) -> None:
 
 def container_for(target: str):
     client = docker.DockerClient(base_url=DOCKER_HOST)
-    matches = client.containers.list(all=True, filters={"label": f"com.docker.compose.service={target}"})
+    matches = client.containers.list(all=True, filters={"label": [
+        f"com.docker.compose.project={DOCKER_PROJECT}",
+        f"com.docker.compose.service={target}",
+    ]})
     if not matches:
         raise RuntimeError(f"container not found: {target}")
     return matches[0]
@@ -35,7 +48,72 @@ def require_target(target: str, allowed: frozenset[str], operation: str) -> None
         raise HTTPException(status_code=403, detail=f"{operation} target is not allowlisted: {target}")
 
 
-app = FastAPI(title="OpsPilot Restricted Docker Proxy", version="0.1.0")
+def discover_log_targets() -> list[dict]:
+    client = docker.DockerClient(base_url=DOCKER_HOST)
+    discovered = []
+    for service in sorted(LOG_TARGETS):
+        containers = client.containers.list(all=True, filters={"label": [
+            f"com.docker.compose.project={DOCKER_PROJECT}",
+            f"com.docker.compose.service={service}",
+        ]})
+        for container in containers:
+            container_id = container.id
+            discovered.append({
+                "targets": ["localhost"],
+                "labels": {
+                    "__path__": (
+                        f"/var/lib/docker/containers/{container_id}/"
+                        f"{container_id}-json.log"
+                    ),
+                    "compose_service": service,
+                    "container": f"/{container.name}",
+                },
+            })
+    return sorted(
+        discovered,
+        key=lambda target: (
+            target["labels"]["compose_service"],
+            target["labels"]["container"],
+        ),
+    )
+
+
+def publish_log_targets(path: str, targets: list[dict]) -> None:
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(f"{destination.suffix}.tmp")
+    temporary.write_text(json.dumps(targets, separators=(",", ":")), encoding="utf-8")
+    os.replace(temporary, destination)
+
+
+async def refresh_log_targets() -> None:
+    while True:
+        try:
+            targets = await asyncio.to_thread(discover_log_targets)
+            if targets:
+                await asyncio.to_thread(publish_log_targets, LOG_DISCOVERY_FILE, targets)
+            else:
+                log.warning("no allowlisted log targets discovered; retaining last-known-good file")
+        except Exception:
+            log.exception("failed to refresh allowlisted Promtail log targets")
+        await asyncio.sleep(LOG_DISCOVERY_INTERVAL_SECONDS)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    task = asyncio.create_task(refresh_log_targets()) if LOG_DISCOVERY_FILE else None
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
+app = FastAPI(title="OpsPilot Restricted Docker Proxy", version="0.1.0", lifespan=lifespan)
 
 
 @app.get("/health")

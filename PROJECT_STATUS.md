@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-01 (container metrics health and per-service CPU policy milestone)
+Last updated: 2026-09-01 (socketless Promtail log discovery milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Real container CPU metrics now include strict per-service thresholds plus exporter-down, target-collection-failure, and stale-sample alerting without widening Docker socket ownership. Continue with Promtail socket-discovery hardening while keeping the CPU and Redis incident flows green.
+4. Promtail now uses a Proxy-published, allowlisted file-discovery target set and no longer mounts the Docker socket. Continue by making log-discovery/ingestion health explicit and persisting Promtail positions while keeping the CPU and Redis incident flows green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -37,7 +37,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Prometheus scraping all three applications every five seconds.
 - Prometheus rules for Redis down, MySQL down, sustained per-service container CPU usage, exporter loss, target collection failures, and stale CPU samples.
 - A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage, collection health, last-success time, and strictly validated per-service alert thresholds.
-- Loki and Promtail collect Docker logs.
+- Loki and Promtail collect the three business services' Docker JSON logs through an atomic, Proxy-published file-discovery target set. Promtail retains the existing Loki labels without Docker socket access.
 - Grafana has provisioned Prometheus and Loki data sources.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
 
@@ -77,7 +77,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - A typed `ExecutionAction` and `RestrictedExecutor` form a narrow gateway seam that exposes restart operations rather than arbitrary shell execution.
 - Policy allow and deny decisions are included in incident evidence and normalized into the SQLite `policy_decisions` audit table.
 - Policy approval does not replace human approval: medium-risk restart requires both `execute=true` and `approved=true` before the restricted executor is called.
-- Within the control, execution, and container-metrics path, the Docker socket is mounted only into the internal restricted proxy. Control API, executor gateway, and the metrics exporter have no socket access. Promtail retains its pre-existing socket mount for Docker log discovery and is a separate production-hardening boundary.
+- Across the default stack, the Docker socket is mounted only into the internal restricted proxy. Control API, executor gateway, the metrics exporter, and Promtail have no socket access. The Proxy discovers only the current Compose project's three business services and atomically publishes their derived JSON log paths into a dedicated volume; Promtail mounts that target volume and the host container-log directory read-only.
 - The gateway accepts typed `restart_container` and `stop_container` requests only, applies operation-specific target allowlists, and never accepts shell commands.
 - The gateway image no longer contains the Docker SDK; it calls fixed status, restart, and stop proxy routes over a dedicated internal network.
 - The proxy has no host port, is not attached to the Control API network, independently enforces operation-specific target allowlists, and exposes no raw Docker API routes. Its read-only stats route is limited to the three business services and returns only CPU counters needed by the exporter.
@@ -128,6 +128,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the socketless Promtail log discovery milestone:
+
+- The rebuilt current-source test image passed all 89 backend tests; the only warning remains the existing LangGraph dependency deprecation notice. New coverage verifies Compose-project-bound, three-service log target discovery plus deterministic atomic publication to the Promtail target file.
+- Compose and the real Promtail 3.5.3 configuration validated. The rebuilt Proxy and recreated Promtail deployed in the 15-service default stack; Proxy published exactly `user-service`, `order-service`, and `payment-service`, and Promtail activated all three targets with the existing `compose_service` and `container` labels.
+- Promtail no longer mounts `/var/run/docker.sock`; it has only the config, read-only target volume, and read-only host container-log directory. Runtime inspection confirmed that the Proxy is the sole socket owner, its target volume is the only shared discovery seam, and Control API still cannot resolve the isolated Proxy network name.
+- Loki returned live payment-service logs with the compatible labels. During a real Redis outage it returned the error line inside the incident window; `incident_context` reported one Loki line without changing the list-shaped Loki evidence or Dashboard-facing state.
+- A bounded payment-service CPU fault reached about `0.998` cores, fired `ContainerHighCPU`, created only a recommendation incident with root cause `Container CPU usage is high`, confidence `0.9`, no execution/verification claim, and then reached `alert_resolved`.
+- A real Redis outage produced `dependency_up=0`, RCA confidence `0.92`, recommendation-only non-execution, and `awaiting_approval` when approval was missing. Explicit approval restarted Redis through Gateway/Proxy and reached `resolved`, `verified=true` on verification attempt four.
+- Live Gateway checks returned 401 without identity, 200 once then 401 on replay, and 403 for an authenticated unknown target. Proxy checks returned 401 without identity, 200 for allowlisted stats, 403 for denied stats, and 404 for the raw Docker route and removed log-discovery API.
 
 Latest verification for the container metrics health and per-service CPU policy milestone:
 
@@ -374,7 +384,7 @@ Local entry points:
 - `apps/control-api/opspilot/tools.py`: Prometheus, Loki, and Docker tool seam.
 - `apps/control-api/opspilot/execution.py`: execution allowlist policy, typed action, and restricted executor boundary.
 - `apps/executor-gateway/app.py`: authenticated typed Docker operations, operation-specific allowlists, and independent execution audit storage.
-- `apps/docker-proxy/app.py`: internal fixed-route Docker runtime proxy and second target allowlist.
+- `apps/docker-proxy/app.py`: internal fixed-route Docker runtime proxy, second target allowlist, and atomic business-log target publisher.
 - `apps/container-metrics-exporter/app.py`: socketless CPU exporter backed by the Proxy's trimmed read-only stats route.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
 - `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, revision history, and durable peer credential consumption.
@@ -395,7 +405,7 @@ Local entry points:
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation now uses real Docker counters with strict per-service thresholds and health/staleness alerts, but the local exporter still polls on scrape, covers only the three business services, uses the local shared proxy token, and requires recreation to change targets or thresholds. Last-success timestamps are process-local and reset when the exporter restarts.
-- Promtail still mounts the Docker socket for container log discovery. It is outside the Gateway/Proxy execution and CPU metrics paths, but production should replace that discovery mechanism or isolate it with a narrower runtime interface.
+- Promtail no longer mounts the Docker socket and receives only three allowlisted file-discovery targets from the Proxy. It still mounts the host container-log directory read-only, its positions file is process-local under `/tmp`, and target-publication/Loki-ingestion staleness does not yet have dedicated metrics or alerts; production should use runtime-level forwarding or enforce narrower filesystem visibility.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
@@ -510,6 +520,13 @@ Local entry points:
 - Strengthened smoke to verify collection health, the active payment-service threshold, and fresh samples.
 - Revalidated failure/staleness firing and recovery, threshold-driven real CPU firing/resolution, Alertmanager non-execution, the Redis approval/recovery path, and all Gateway/Proxy isolation boundaries.
 
+### Completed: socketless Promtail log discovery
+
+- Removed Promtail's Docker socket mount and Docker API discovery without changing Loki query labels, incident-time correlation, list-shaped evidence, or Dashboard formats.
+- Reused the sole socket-owning restricted Proxy to discover only the current Compose project's three business services and atomically publish derived JSON log paths through a dedicated volume; no log-discovery HTTP API was added.
+- Kept the last-known-good target file when discovery is empty or fails, mounted it read-only into Promtail, and strengthened smoke to require recent payment-service logs in Loki.
+- Revalidated live Loki error ingestion, CPU alert firing/resolution, the complete Redis approval/recovery path, identity/replay/target/raw-route denials, socket ownership, Compose, smoke, and the complete test suite.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -518,10 +535,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
-- Replace Promtail's Docker-socket discovery with a narrower log-ingestion boundary before expanding CPU remediation or coverage beyond the three business services.
+- Persist Promtail positions and add explicit target-publication and Loki-ingestion freshness metrics/alerts before expanding CPU remediation or log coverage beyond the three business services.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Real CPU metrics now use strict exported per-service thresholds and include exporter-down, per-target collection-failure, and stale-sample alerts; CPU Alertmanager handling remains recommendation-only. Signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded fan-out, and rollout-state reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, retrieval, persistence, execution policy, and audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Next, replace Promtail's Docker-socket discovery with a narrower log-ingestion boundary, then run `make test`, rebuild affected images, run `make smoke`, perform live CPU and Redis acceptance, and update this handoff.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Promtail no longer mounts the Docker socket: the sole socket-owning Proxy atomically publishes file-discovery targets for only the current Compose project's three business services, preserving the existing Loki labels and incident evidence formats. Real CPU metrics use strict exported per-service thresholds and include exporter-down, per-target collection-failure, and stale-sample alerts; CPU Alertmanager handling remains recommendation-only. Signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded fan-out, and rollout-state reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, retrieval, persistence, execution policy, and audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Next, persist Promtail positions and add explicit log-target publication and Loki-ingestion freshness metrics/alerts, then run `make test`, rebuild affected images, run `make smoke`, perform live CPU and Redis acceptance, and update this handoff.
