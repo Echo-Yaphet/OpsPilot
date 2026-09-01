@@ -205,6 +205,18 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [executor-runtime]
 
+  container-metrics-exporter:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/container-metrics-exporter/Dockerfile
+    environment:
+      DOCKER_PROXY_URL: http://docker-proxy:2375
+      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
+      CONTAINER_METRICS_TARGETS: user-service,order-service,payment-service
+    networks: [opspilot, executor-runtime]
+    depends_on: [docker-proxy]
+
   mysql:
     <<: *service-common
     image: mysql:8.4

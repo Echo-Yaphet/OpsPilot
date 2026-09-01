@@ -19,6 +19,20 @@ class FakeContainer:
     def stop(self, timeout):
         self.stopped = True
 
+    def stats(self, stream):
+        assert stream is False
+        return {
+            "cpu_stats": {
+                "cpu_usage": {"total_usage": 300},
+                "system_cpu_usage": 2000,
+                "online_cpus": 4,
+            },
+            "precpu_stats": {
+                "cpu_usage": {"total_usage": 100},
+                "system_cpu_usage": 1000,
+            },
+        }
+
 
 def load_proxy(monkeypatch):
     monkeypatch.setenv("DOCKER_PROXY_TOKEN", "test-proxy-token")
@@ -50,12 +64,22 @@ def test_proxy_allows_only_fixed_operations_and_targets(monkeypatch):
     monkeypatch.setattr(module, "container_for", lambda target: container)
 
     status = client.get("/v1/containers/redis/status", headers=auth())
+    stats = client.get("/v1/containers/payment-service/stats", headers=auth())
     restarted = client.post("/v1/containers/redis/restart", headers=auth())
     stopped = client.post("/v1/containers/redis/stop", headers=auth())
 
     assert status.json()["status"] == "running"
+    assert stats.json() == {
+        "target": "payment-service",
+        "cpu_total_usage": 300,
+        "previous_cpu_total_usage": 100,
+        "system_cpu_usage": 2000,
+        "previous_system_cpu_usage": 1000,
+        "online_cpus": 4,
+    }
     assert restarted.status_code == 200 and container.restarted
     assert stopped.status_code == 200 and container.stopped
     assert client.post("/v1/containers/prometheus/restart", headers=auth()).status_code == 403
     assert client.post("/v1/containers/payment-service/stop", headers=auth()).status_code == 403
     assert client.post("/v1/containers/unknown/restart", headers=auth()).status_code == 403
+    assert client.get("/v1/containers/redis/stats", headers=auth()).status_code == 403

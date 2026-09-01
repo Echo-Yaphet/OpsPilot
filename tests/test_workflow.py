@@ -15,6 +15,8 @@ class FakeTools(OpsTools):
     restarted = None
 
     async def query_metric(self, query):
+        if "container_cpu_usage_ratio" in query:
+            return []
         value = "1" if self.restarted else "0"
         return [{"metric": {"service": "payment-service", "dependency": "redis"}, "value": [1, value]}]
 
@@ -89,6 +91,18 @@ class IncidentTimeTools(FakeTools):
     async def query_logs_between(self, service, start, end, limit=100):
         self.log_window = (start, end)
         return ["level=ERROR redis dependency failed inside incident window"]
+
+
+class HighCPUTools(InconclusiveTools):
+    async def query_metric(self, query):
+        if "container_cpu_usage_ratio" in query:
+            return [{
+                "metric": {
+                    "__name__": "container_cpu_usage_ratio", "service": "payment-service",
+                },
+                "value": [1, "0.95"],
+            }]
+        return []
 
 
 class FailedExecutor:
@@ -168,6 +182,24 @@ async def test_inconclusive_rca_completes_graph_without_execution():
     assert [event.agent.value for event in state.events] == [
         "coordinator", "monitor", "log", "rca", "solution", "safety", "executor", "verification"
     ]
+
+
+@pytest.mark.asyncio
+async def test_high_container_cpu_produces_safe_service_recommendation():
+    tools = HighCPUTools()
+    state = await IncidentWorkflow(tools).run(AnalyzeRequest(
+        service="payment-service", symptom="Container CPU usage is high on payment-service",
+    ))
+    assert state.root_cause == "Container CPU usage is high"
+    assert state.confidence == pytest.approx(0.9)
+    assert state.status == "recommendation_ready"
+    assert state.execution_result is None
+    assert state.recommendations[0].title == (
+        "Restart payment-service and verify container CPU usage"
+    )
+    assert state.recommendations[0].command == "docker compose restart payment-service"
+    cpu = next(item for item in state.evidence if item.summary == "container CPU usage metrics")
+    assert cpu.data[0]["value"][1] == "0.95"
 
 
 @pytest.mark.asyncio

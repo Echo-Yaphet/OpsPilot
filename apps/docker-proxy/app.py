@@ -11,6 +11,7 @@ STATUS_TARGETS = frozenset({
 })
 RESTART_TARGETS = frozenset({"redis", "mysql", "user-service", "order-service", "payment-service"})
 STOP_TARGETS = frozenset({"redis", "mysql"})
+STATS_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
 PROXY_TOKEN = os.getenv("DOCKER_PROXY_TOKEN", "")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 
@@ -47,6 +48,26 @@ async def container_status(target: str):
     require_target(target, STATUS_TARGETS, "status")
     try:
         return {"target": target, "status": container_for(target).status}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/v1/containers/{target}/stats", dependencies=[Depends(authorize)])
+def container_stats(target: str):
+    """Return only the CPU counters required by the metrics exporter."""
+    require_target(target, STATS_TARGETS, "stats")
+    try:
+        stats = container_for(target).stats(stream=False)
+        current = stats.get("cpu_stats", {})
+        previous = stats.get("precpu_stats", {})
+        return {
+            "target": target,
+            "cpu_total_usage": current.get("cpu_usage", {}).get("total_usage", 0),
+            "previous_cpu_total_usage": previous.get("cpu_usage", {}).get("total_usage", 0),
+            "system_cpu_usage": current.get("system_cpu_usage", 0),
+            "previous_system_cpu_usage": previous.get("system_cpu_usage", 0),
+            "online_cpus": current.get("online_cpus", 1),
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

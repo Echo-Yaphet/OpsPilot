@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-01 (authenticated peer rollout control-plane hardening milestone)
+Last updated: 2026-09-01 (real container CPU observability and incident-loop milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Authenticated peer status, replay-safe node identity, bounded parallel fan-out, partial-failure reporting, and explicit rollout states are complete. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Real container CPU metrics, alerting, and non-executing incident-loop integration are complete without widening Docker socket ownership. Continue with the next production-safety milestone while keeping the Redis incident flow green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -31,11 +31,12 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 
 ### Runtime and observability
 
-- Docker Compose monorepo with 14 services, including Alertmanager, a separate executor gateway, and an internal restricted Docker proxy.
+- Docker Compose monorepo with 15 services, including Alertmanager, a separate executor gateway, an internal restricted Docker proxy, and a socketless container metrics exporter.
 - Three FastAPI sample applications: `user-service`, `order-service`, and `payment-service`.
 - MySQL 8.4 and Redis 7.4 dependencies.
 - Prometheus scraping all three applications every five seconds.
-- Prometheus rules for Redis down, MySQL down, and a bounded high-work proxy signal.
+- Prometheus rules for Redis down, MySQL down, and sustained real payment-service container CPU usage.
+- A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage plus collection health.
 - Loki and Promtail collect Docker logs.
 - Grafana has provisioned Prometheus and Loki data sources.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
@@ -76,10 +77,10 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - A typed `ExecutionAction` and `RestrictedExecutor` form a narrow gateway seam that exposes restart operations rather than arbitrary shell execution.
 - Policy allow and deny decisions are included in incident evidence and normalized into the SQLite `policy_decisions` audit table.
 - Policy approval does not replace human approval: medium-risk restart requires both `execute=true` and `approved=true` before the restricted executor is called.
-- The Docker socket is mounted only into an internal restricted proxy. Neither the Control API nor executor gateway has socket access.
+- Within the control, execution, and container-metrics path, the Docker socket is mounted only into the internal restricted proxy. Control API, executor gateway, and the metrics exporter have no socket access. Promtail retains its pre-existing socket mount for Docker log discovery and is a separate production-hardening boundary.
 - The gateway accepts typed `restart_container` and `stop_container` requests only, applies operation-specific target allowlists, and never accepts shell commands.
 - The gateway image no longer contains the Docker SDK; it calls fixed status, restart, and stop proxy routes over a dedicated internal network.
-- The proxy has no host port, is not attached to the Control API network, independently enforces operation-specific target allowlists, and exposes no raw Docker API routes.
+- The proxy has no host port, is not attached to the Control API network, independently enforces operation-specific target allowlists, and exposes no raw Docker API routes. Its read-only stats route is limited to the three business services and returns only CPU counters needed by the exporter.
 - Gateway allow, deny, and failure outcomes are persisted independently in its `execution_audit` SQLite table and volume.
 - Gateway failures and timeouts produce `execution_failed` incidents and do not enter recovery verification.
 - Control API no longer transmits a reusable static Gateway token. It mints a new HMAC-signed workload credential for every Gateway request.
@@ -124,9 +125,18 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 
 - `Redis down`: complete detection, alert, evidence, RCA, recommendation, approval, restart, and recovery path.
 - `MySQL down`: injectable and handled by deterministic RCA rules.
-- `CPU spike`: bounded 15-second Dashboard action and 30-second script action; observability is intentionally basic.
+- `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the real container CPU observability and incident-loop milestone:
+
+- All 86 backend tests passed in the rebuilt Control API image. New coverage verifies proxy stats identity/target allowlisting, trimmed CPU counters, Docker delta-to-core conversion, per-target exporter failure isolation, CPU evidence/RCA, and a safe service recommendation. The only warning remains the existing LangGraph dependency deprecation notice.
+- Compose validation passed and the affected Control API, Docker Proxy, container metrics exporter, and Prometheus configuration deployed. The default stack now has 15 running services; Redis/MySQL are healthy, the default unsigned local Verification policy is accepted with no load error, and final smoke includes `container_cpu_metrics_up=1` for payment-service.
+- Prometheus reported the new exporter target up. Live payment-service CPU usage rose from about `0.0013` cores at idle to about `1.00` core during the bounded 30-second fault, remained above `0.8` for the required 10 seconds, and fired `ContainerHighCPU`.
+- Alertmanager created a persisted payment-service incident with root cause `Container CPU usage is high`, confidence `0.9`, `execution_requested=false`, no execution result, no verification claim, and a medium-risk approval-required restart recommendation. After the bounded work ended, it updated the same incident to `alert_resolved` without executing remediation.
+- A real Redis outage still produced `dependency_up=0`, confidence `0.92`, recommendation-only non-execution, and `awaiting_approval` when approval was missing. Explicit approval restarted Redis through Gateway/Proxy and reached `resolved`, `verified=true`.
+- Live Gateway checks returned 401 without identity, 403 for an authenticated unknown target, and 401 on replay. Proxy stats returned 401 without identity, 200 for an allowlisted business service, 403 for a non-stats target, and 404 for a raw Docker route. Control API could not resolve the Proxy network; Control API, Gateway, and the exporter had no Docker socket mount, while the Proxy remained the sole socket owner among them.
 
 Latest verification for the authenticated peer rollout control-plane hardening milestone:
 
@@ -356,6 +366,7 @@ Local entry points:
 - `apps/control-api/opspilot/execution.py`: execution allowlist policy, typed action, and restricted executor boundary.
 - `apps/executor-gateway/app.py`: authenticated typed Docker operations, operation-specific allowlists, and independent execution audit storage.
 - `apps/docker-proxy/app.py`: internal fixed-route Docker runtime proxy and second target allowlist.
+- `apps/container-metrics-exporter/app.py`: socketless CPU exporter backed by the Proxy's trimmed read-only stats route.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
 - `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, revision history, and durable peer credential consumption.
 - `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, request-bound peer identity, and bounded multi-node rollout reporter.
@@ -374,7 +385,8 @@ Local entry points:
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
-- CPU observation is a synthetic proxy, not container CPU from cAdvisor or an equivalent exporter.
+- CPU observation now uses real Docker CPU counters, but the local exporter polls on scrape, covers only the three business services, uses the local shared proxy token, and has no separate alert yet for collection-health loss or stale samples.
+- Promtail still mounts the Docker socket for container log discovery. It is outside the Gateway/Proxy execution and CPU metrics paths, but production should replace that discovery mechanism or isolate it with a narrower runtime interface.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
@@ -474,6 +486,14 @@ Local entry points:
 - Added desired revision/digest plus explicit `converged`, `degraded`, `stalled`, and default-local `inactive` states without removing the existing rollout response fields.
 - Revalidated healthy convergence, signature-rejection stall, canary loss, distributor loss with accepted-only cache, recovery, default local mode, the real Redis approval/recovery path, and Gateway/Proxy isolation.
 
+### Completed: real container CPU observability and incident-loop integration
+
+- Added a socketless exporter that converts real Docker CPU counter deltas into per-service core usage through an authenticated, trimmed, allowlisted Proxy stats route.
+- Added Prometheus scraping, collection-health metrics, and a bounded payment-service high-CPU alert without attaching cAdvisor or another component to the Docker socket.
+- Added container CPU evidence and deterministic high-CPU RCA behind the existing `OpsTools`/`IncidentWorkflow.run()` seams without changing `IncidentState` or Dashboard evidence shapes.
+- Preserved bounded fault duration, Alertmanager non-execution, explicit policy and approval gates, Verification snapshots, revision rollback protections, and Gateway/Proxy isolation.
+- Revalidated live CPU firing/resolution, persisted recommendation-only handling, the full Redis approval/recovery path, identity/replay/target denials, socket ownership, Compose, smoke, and the complete test suite.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -482,10 +502,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
-- Add cAdvisor or equivalent container metrics for the CPU scenario.
+- Add exporter collection-health/staleness alerting and configurable per-service CPU thresholds before expanding CPU remediation or coverage beyond the three business services.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 14 services; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded parallel fan-out, partial-failure retention, and explicit desired/converged/degraded/stalled reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, deterministic plus optional semantic retrieval, persistent incidents, exact execution policy, and separate audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Implement one next production-safety milestone, run `make test`, rebuild affected images, run `make smoke`, perform live acceptance, and update this handoff before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Real CPU metrics/alerting/RCA, signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded parallel fan-out, partial-failure retention, and explicit desired/converged/degraded/stalled reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, deterministic plus optional semantic retrieval, persistent incidents, exact execution policy, and separate audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Implement one next production-safety milestone, run `make test`, rebuild affected images, run `make smoke`, perform live acceptance, and update this handoff before declaring completion.

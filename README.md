@@ -4,7 +4,7 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 `故障注入 → Prometheus/Loki 取证 → RCA → 方案生成 → 安全审查 → 人工审批 → 执行 → 验证`
 
-当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。Docker socket 仅挂载到内部受限代理；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。
+当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。在控制、执行和容器指标路径中，Docker socket 只挂载到内部受限代理；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。Promtail 仍保留既有的 Docker 日志发现 socket 挂载，不参与执行或 CPU 指标路径。
 
 ## 快速启动
 
@@ -60,7 +60,7 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> Docker socket 仅挂载到 `docker-proxy`。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的状态、restart 和 stop 路由；原始 Docker API 不可访问。Gateway 本身无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。默认共享签名密钥和代理 token 仅适用于本地 MVP，生产环境仍应接入外部 workload identity 以及操作系统级的运行时权限隔离。
+> 在控制、执行和容器指标路径中，Docker socket 仅挂载到 `docker-proxy`。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 不可访问。新的容器指标 exporter 无 socket，只能使用本地代理身份读取三个业务容器裁剪后的 CPU 计数器。Gateway 本身也无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。Promtail 的既有 socket 挂载只用于日志服务发现，但仍是生产加固时应移除或替换的独立权限边界。默认共享签名密钥和代理 token 仅适用于本地 MVP，生产环境仍应接入外部 workload identity 以及操作系统级的运行时权限隔离。
 
 ## Gateway workload identity 密钥轮换
 
@@ -90,7 +90,7 @@ make fault-mysql   # 停止 MySQL，并触发三个服务的健康检查
 make recover       # 启动 Redis/MySQL 并重启 payment-service
 ```
 
-CPU 场景目前完成指标/告警基础，MySQL 场景已进入同一条确定性 RCA 链路。后续阶段会补容器 CPU exporter、告警 webhook 和更丰富的修复策略。
+CPU 场景现在使用真实 Docker CPU 计数器。`container-metrics-exporter` 通过受限代理的认证 stats 路由导出 `container_cpu_usage_ratio` 和 `container_cpu_metrics_up`；Prometheus 对 payment-service 持续高于 `0.8` 核 10 秒触发 `ContainerHighCPU`。告警经现有 Alertmanager webhook 创建只建议 incident，确定性 RCA 返回 `Container CPU usage is high`，置信度 `0.9`，并建议在显式人工审批后重启 payment-service；Alertmanager 自身永不请求执行。30 秒脚本和 Dashboard 的 15 秒动作仍保持有界。MySQL 场景继续使用同一条确定性 RCA 链路。
 
 ## 目录结构
 
@@ -100,6 +100,7 @@ apps/
   control-api/        FastAPI 控制面、状态模型、Agent 工作流、Tools
   executor-gateway/   独立执行边界、身份校验、操作白名单与审计
   docker-proxy/       仅持有 socket 的受限容器运行时代理
+  container-metrics-exporter/  通过受限 stats 路由导出真实容器 CPU 指标
   shared-service/     三个示例服务共享的最小实现
   user-service/       user-service 容器入口
   order-service/      order-service 容器入口

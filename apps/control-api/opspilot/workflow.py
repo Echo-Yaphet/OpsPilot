@@ -22,6 +22,7 @@ class WorkflowState(TypedDict):
     incident: IncidentState
     request: AnalyzeRequest
     metrics: list[dict]
+    cpu_metrics: list[dict]
     logs: list[str]
     target: str
     policy_decision: PolicyDecision | None
@@ -112,20 +113,35 @@ class IncidentWorkflow:
     async def _monitor(self, graph_state: WorkflowState) -> dict:
         state, request = graph_state["incident"], graph_state["request"]
         metric_query = f'dependency_up{{service="{request.service}"}}'
-        try:
-            query_at = graph_state["evidence_context"]["incident_at_value"]
-            query_metric_at = getattr(self.tools, "query_metric_at", None)
-            if query_metric_at is None:
-                metrics = await self.tools.query_metric(metric_query)
-                graph_state["evidence_context"]["prometheus"]["mode"] = "current_fallback"
-            else:
-                metrics = await query_metric_at(metric_query, query_at)
-        except Exception as exc:
-            metrics = []
-            state.evidence.append(Evidence(source="prometheus", summary="metrics query unavailable", data=str(exc)))
+        cpu_query = f'container_cpu_usage_ratio{{service="{request.service}"}}'
+        query_at = graph_state["evidence_context"]["incident_at_value"]
+        query_metric_at = getattr(self.tools, "query_metric_at", None)
+
+        async def query(query: str, summary: str) -> list[dict]:
+            try:
+                if query_metric_at is None:
+                    graph_state["evidence_context"]["prometheus"]["mode"] = "current_fallback"
+                    return await self.tools.query_metric(query)
+                return await query_metric_at(query, query_at)
+            except Exception as exc:
+                state.evidence.append(Evidence(
+                    source="prometheus", summary=f"{summary} query unavailable", data=str(exc),
+                ))
+                return []
+
+        metrics, cpu_metrics = await asyncio.gather(
+            query(metric_query, "dependency metrics"),
+            query(cpu_query, "container CPU metrics"),
+        )
         state.evidence.append(Evidence(source="prometheus", summary="dependency health metrics", data=metrics))
-        self.event(state, AgentName.MONITOR, f"Collected {len(metrics)} dependency series")
-        return {"incident": state, "metrics": metrics}
+        state.evidence.append(Evidence(
+            source="prometheus", summary="container CPU usage metrics", data=cpu_metrics,
+        ))
+        self.event(
+            state, AgentName.MONITOR,
+            f"Collected {len(metrics)} dependency and {len(cpu_metrics)} container CPU series",
+        )
+        return {"incident": state, "metrics": metrics, "cpu_metrics": cpu_metrics}
 
     async def _log(self, graph_state: WorkflowState) -> dict:
         state, request = graph_state["incident"], graph_state["request"]
@@ -146,7 +162,9 @@ class IncidentWorkflow:
             key: value for key, value in graph_state["evidence_context"].items()
             if not key.endswith("_value")
         }
-        public_context["prometheus"]["series_count"] = len(graph_state["metrics"])
+        public_context["prometheus"]["series_count"] = (
+            len(graph_state["metrics"]) + len(graph_state["cpu_metrics"])
+        )
         public_context["loki"]["line_count"] = len(logs)
         state.evidence.append(Evidence(
             source="incident_context", summary="incident-time evidence correlation",
@@ -179,6 +197,11 @@ class IncidentWorkflow:
 
         redis_down = dependency_is_down("redis")
         mysql_down = dependency_is_down("mysql")
+        high_cpu = any(
+            item.get("metric", {}).get("__name__") == "container_cpu_usage_ratio"
+            and float(item.get("value", [0, 0])[1]) > 0.8
+            for item in graph_state["cpu_metrics"]
+        )
 
         if redis_down:
             state.root_cause, state.confidence = "Redis dependency is unavailable", 0.92
@@ -186,6 +209,9 @@ class IncidentWorkflow:
         elif mysql_down:
             state.root_cause, state.confidence = "MySQL dependency is unavailable", 0.9
             target = "mysql"
+        elif high_cpu:
+            state.root_cause, state.confidence = "Container CPU usage is high", 0.9
+            target = request.service
         else:
             state.root_cause, state.confidence = "Insufficient evidence; dependency or application degradation suspected", 0.45
             target = request.service
@@ -215,6 +241,8 @@ class IncidentWorkflow:
         if command is None:
             command = f"docker compose restart {target}"
         title = matched_runbook.get("title") if matched_runbook else None
+        if title is None and state.root_cause == "Container CPU usage is high":
+            title = f"Restart {target} and verify container CPU usage"
         state.recommendations.append(Recommendation(
             title=title or f"Restart {target} and verify dependency metrics", command=command,
             risk=RiskLevel.MEDIUM, requires_approval=True,
@@ -404,6 +432,7 @@ class IncidentWorkflow:
                 "incident": incident,
                 "request": request,
                 "metrics": [],
+                "cpu_metrics": [],
                 "logs": [],
                 "target": request.service,
                 "policy_decision": None,

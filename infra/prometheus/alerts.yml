@@ -13,10 +13,9 @@ groups:
         labels: {severity: critical}
         annotations:
           summary: "MySQL is unavailable to {{ $labels.service }}"
-      - alert: ServiceHighCPUProxy
-        expr: rate(http_request_duration_seconds_sum[1m]) > 1
-        for: 15s
+      - alert: ContainerHighCPU
+        expr: container_cpu_usage_ratio{service="payment-service"} > 0.8
+        for: 10s
         labels: {severity: warning}
         annotations:
-          summary: "Sustained expensive work on {{ $labels.service }}"
-
+          summary: "Container CPU usage is high on {{ $labels.service }}"
