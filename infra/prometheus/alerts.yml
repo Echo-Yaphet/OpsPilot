@@ -53,3 +53,22 @@ groups:
         labels: {severity: warning}
         annotations:
           summary: "Loki log ingestion is stale"
+      - record: opspilot_service_log_read_fresh
+        expr: |
+          (
+            sum by (service) (
+              increase(promtail_read_lines_total[1m])
+              * on (path) group_left(service)
+                docker_proxy_log_target_info
+            ) > bool 0
+          )
+          or
+          (
+            max by (service) (docker_proxy_log_target_info) * 0
+          )
+      - alert: ServiceLogCollectionStale
+        expr: opspilot_service_log_read_fresh == 0
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: "Promtail log collection is stale for {{ $labels.service }}"

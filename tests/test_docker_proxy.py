@@ -161,7 +161,11 @@ def test_proxy_publishes_promtail_targets_atomically(tmp_path, monkeypatch):
 def test_proxy_exposes_successful_log_target_publication_metrics(tmp_path, monkeypatch):
     module, client = load_proxy(monkeypatch)
     destination = tmp_path / "targets.json"
-    targets = [{"targets": ["localhost"], "labels": {"compose_service": "payment-service"}}]
+    log_path = "/var/lib/docker/containers/payment-id/payment-id-json.log"
+    targets = [{
+        "targets": ["localhost"],
+        "labels": {"compose_service": "payment-service", "__path__": log_path},
+    }]
     monkeypatch.setattr(module, "LOG_DISCOVERY_FILE", str(destination))
     monkeypatch.setattr(module, "discover_log_targets", lambda: targets)
     monkeypatch.setattr(module.time, "time", lambda: 456.0)
@@ -174,6 +178,10 @@ def test_proxy_exposes_successful_log_target_publication_metrics(tmp_path, monke
     assert "docker_proxy_log_target_publication_last_success_timestamp_seconds 456.000" in response.text
     assert "docker_proxy_log_targets 1" in response.text
     assert "docker_proxy_log_target_publication_failures_total 0" in response.text
+    assert (
+        'docker_proxy_log_target_info{service="payment-service",'
+        f'path="{log_path}"}} 1'
+    ) in response.text
 
 
 def test_proxy_reports_failed_publication_and_retains_last_known_good(tmp_path, monkeypatch):
@@ -192,6 +200,27 @@ def test_proxy_reports_failed_publication_and_retains_last_known_good(tmp_path, 
     assert "docker_proxy_log_target_publication_last_success_timestamp_seconds 123.000" in response.text
     assert "docker_proxy_log_targets 0" in response.text
     assert "docker_proxy_log_target_publication_failures_total 1" in response.text
+
+
+def test_proxy_retains_last_known_good_log_target_info_after_refresh_failure(tmp_path, monkeypatch):
+    destination = tmp_path / "targets.json"
+    log_path = "/var/lib/docker/containers/payment-id/payment-id-json.log"
+    destination.write_text(
+        '[{"targets":["localhost"],"labels":{"__path__":"'
+        f'{log_path}","compose_service":"payment-service"}}' + '}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DOCKER_PROXY_LOG_DISCOVERY_FILE", str(destination))
+    module, client = load_proxy(monkeypatch)
+    monkeypatch.setattr(module, "discover_log_targets", lambda: [])
+
+    asyncio.run(module.refresh_log_targets_once())
+    response = client.get("/metrics")
+
+    assert (
+        'docker_proxy_log_target_info{service="payment-service",'
+        f'path="{log_path}"}} 1'
+    ) in response.text
 
 
 def test_proxy_restores_last_known_good_timestamp_after_restart(tmp_path, monkeypatch):

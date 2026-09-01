@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-01 (persistent Promtail positions and log freshness milestone)
+Last updated: 2026-09-01 (per-service log freshness milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Promtail now persists positions across container recreation, while Proxy publication and Promtail-to-Loki ingestion freshness have explicit metrics and alerts. Continue by deepening per-service log freshness or moving production deployments to runtime-level forwarding while keeping the CPU and Redis incident flows green.
+4. Promtail now persists positions across recreation; Proxy publication, stack-level Loki ingestion, and per-service Promtail read freshness have explicit metrics and alerts. Continue by replacing the host Docker log-directory mount with runtime-level forwarding while keeping these signals and the CPU/Redis incident flows green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -38,7 +38,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Prometheus rules for Redis down, MySQL down, sustained per-service container CPU usage, exporter loss, target collection failures, and stale CPU samples.
 - A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage, collection health, last-success time, and strictly validated per-service alert thresholds.
 - Loki and Promtail collect the three business services' Docker JSON logs through an atomic, Proxy-published file-discovery target set. Promtail retains the existing Loki labels without Docker socket access.
-- Promtail positions persist in a dedicated named volume. The Proxy exports publication success, last-success time, target count, and failure count; Prometheus also scrapes Promtail's native metrics and alerts on publication failure, stale targets, and stale Loki ingestion.
+- Promtail positions persist in a dedicated named volume. The Proxy exports publication health plus a last-known-good `path`-to-`service` mapping; Prometheus joins that mapping to Promtail's native per-file read counters and records per-service freshness while retaining publication, target-staleness, and stack-level Loki-ingestion alerts.
 - Grafana has provisioned Prometheus and Loki data sources.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
 
@@ -129,6 +129,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the per-service log freshness milestone:
+
+- The rebuilt current-source test image passed all 93 backend tests; the only warning remains the existing LangGraph dependency deprecation notice. New coverage verifies successful path/service publication metrics and last-known-good mapping retention after discovery failure.
+- Compose, `promtool`, and shell validation passed with 11 healthy Prometheus rules: ten alerts plus the `opspilot_service_log_read_fresh` recording rule. The rebuilt Proxy and reloaded Prometheus deployed in the 15-service stack; enhanced smoke proved all three business services fresh alongside the existing target, Loki, CPU, and recommendation-only checks.
+- Stopping only `payment-service` made its freshness signal become `0` and fired `ServiceLogCollectionStale` with `service=payment-service`; `user-service` and `order-service` remained `1`. Alertmanager created a recommendation-only incident with no execution or Verification. Restarting payment-service restored its signal to `1`, cleared the alert, and updated the incident to `alert_resolved`.
+- A bounded payment-service CPU fault reached about `1.003` cores, fired `ContainerHighCPU`, produced RCA confidence `0.9` without execution or Verification, and then reached `alert_resolved`.
+- A real Redis outage produced `dependency_up=0`, recommendation-only non-execution, and `awaiting_approval` without approval. Explicit approval restarted Redis through Gateway/Proxy and reached `resolved`, `verified=true` on verification attempt two under the accepted default unsigned policy.
+- Live Gateway checks returned 401 without identity, 200 once then 401 on replay, and 403 for an authenticated unknown target. Proxy returned 401 without identity and 404 for the raw Docker route; Control API could not resolve the Proxy network name. Docker Desktop exposed the sole Proxy socket bind from `/run/host-services/docker.proxy.sock` to container path `/var/run/docker.sock`.
 
 Latest verification for the persistent Promtail positions and log freshness milestone:
 
@@ -416,7 +425,7 @@ Local entry points:
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation now uses real Docker counters with strict per-service thresholds and health/staleness alerts, but the local exporter still polls on scrape, covers only the three business services, uses the local shared proxy token, and requires recreation to change targets or thresholds. Last-success timestamps are process-local and reset when the exporter restarts.
-- Promtail no longer mounts the Docker socket, receives only three allowlisted file-discovery targets from the Proxy, persists positions in a named volume, and has publication/ingestion freshness metrics and alerts. It still mounts the host container-log directory read-only; production should use runtime-level forwarding or enforce narrower filesystem visibility. The current Loki staleness rule is stack-wide rather than per-service.
+- Promtail no longer mounts the Docker socket, receives only three allowlisted file-discovery targets from the Proxy, persists positions in a named volume, and has publication, stack-level ingestion, and per-service read-freshness metrics and alerts. It still mounts the host container-log directory read-only; production should use runtime-level forwarding or enforce narrower filesystem visibility. Per-service freshness proves Promtail consumed each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
@@ -546,6 +555,13 @@ Local entry points:
 - Strengthened smoke to require successful fresh publication and exactly three active Promtail targets without changing Loki labels, incident evidence, Dashboard formats, or any HTTP/workflow/tool contract.
 - Revalidated all three new alert firing/recovery paths, positions persistence, live CPU firing/resolution, Alertmanager recommendation-only behavior, the full Redis approval/recovery path, Gateway/Proxy denials, network isolation, and socket ownership.
 
+### Completed: per-service log freshness
+
+- Added a last-known-good Proxy info metric that maps each allowlisted log path to its Compose service without changing Promtail targets or Loki stream labels.
+- Joined the mapping to Promtail's per-path read counters in Prometheus, recorded `opspilot_service_log_read_fresh`, and added `ServiceLogCollectionStale` with the affected `service` label while retaining the stack-level Loki send alert.
+- Strengthened smoke to generate traffic and require fresh signals for exactly the three business services.
+- Revalidated isolated per-service firing/resolution, Alertmanager recommendation-only handling, live CPU and Redis flows, Gateway identity/replay/target denials, Proxy raw-route denial, network isolation, and sole socket ownership.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -554,10 +570,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
-- Deepen log freshness to per-service signals or replace host-wide Docker log mounts with runtime-level forwarding before expanding log coverage beyond the three business services.
+- Replace the host-wide Docker log mount with runtime-level forwarding while preserving per-service freshness and the existing Loki labels before expanding log coverage beyond the three business services.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Promtail no longer mounts the Docker socket: the sole socket-owning Proxy atomically publishes file-discovery targets for only the current Compose project's three business services, preserving the existing Loki labels and incident evidence formats. Promtail positions persist in a named volume; Proxy publication and Promtail-to-Loki freshness metrics feed alerts for publication failure, stale targets, and stale ingestion. Real CPU metrics use strict exported per-service thresholds and include exporter-down, per-target collection-failure, and stale-sample alerts; all Alertmanager handling remains recommendation-only. Signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded fan-out, and rollout-state reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, retrieval, persistence, execution policy, and audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Next, deepen log freshness to per-service signals or replace the host-wide log mount with runtime-level forwarding, then run the full deployment and live acceptance set before completing that node.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Promtail no longer mounts the Docker socket: the sole socket-owning Proxy atomically publishes file-discovery targets for only the current Compose project's three business services, preserving existing Loki labels and incident evidence. Promtail positions persist in a named volume; Proxy publication health and stack-level Loki sending remain monitored, while `opspilot_service_log_read_fresh` and `ServiceLogCollectionStale` expose per-service Promtail consumption through the Proxy's last-known-good path/service mapping. Real CPU metrics use strict exported per-service thresholds; all Alertmanager handling remains recommendation-only. Signed bundles, durable rollback protection, authenticated rollout observation, Gateway identity rotation, the restricted Docker proxy, incident-time correlation, retrieval, persistence, execution policy, and audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Next, replace the host-wide Docker log mount with runtime-level forwarding while preserving per-service freshness and existing Loki labels, then run the full deployment and live acceptance set before completing that node.

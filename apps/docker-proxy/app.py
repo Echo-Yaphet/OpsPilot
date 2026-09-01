@@ -35,6 +35,34 @@ LOG_TARGET_COUNT = 0
 log = logging.getLogger(__name__)
 
 
+def log_target_info(targets: list[dict]) -> list[tuple[str, str]]:
+    info = []
+    for target in targets:
+        labels = target.get("labels", {})
+        service = labels.get("compose_service")
+        path = labels.get("__path__")
+        if service in LOG_TARGETS and isinstance(path, str) and path:
+            info.append((service, path))
+    return sorted(set(info))
+
+
+def load_log_target_info(path: str) -> list[tuple[str, str]]:
+    if not path:
+        return []
+    try:
+        targets = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return log_target_info(targets) if isinstance(targets, list) else []
+
+
+def prometheus_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+LOG_TARGET_INFO = load_log_target_info(LOG_DISCOVERY_FILE)
+
+
 def authorize(authorization: str | None = Header(None)) -> None:
     expected = f"Bearer {PROXY_TOKEN}"
     if not PROXY_TOKEN or not authorization or not hmac.compare_digest(authorization, expected):
@@ -100,6 +128,7 @@ async def refresh_log_targets_once() -> None:
     global LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP
     global LOG_TARGET_PUBLICATION_FAILURES
     global LOG_TARGET_COUNT
+    global LOG_TARGET_INFO
     try:
         targets = await asyncio.to_thread(discover_log_targets)
         LOG_TARGET_COUNT = len(targets)
@@ -111,6 +140,7 @@ async def refresh_log_targets_once() -> None:
         await asyncio.to_thread(publish_log_targets, LOG_DISCOVERY_FILE, targets)
         LOG_TARGET_PUBLICATION_UP = 1
         LOG_TARGET_PUBLICATION_LAST_SUCCESS_TIMESTAMP = time.time()
+        LOG_TARGET_INFO = log_target_info(targets)
     except Exception:
         LOG_TARGET_PUBLICATION_UP = 0
         LOG_TARGET_COUNT = 0
@@ -164,7 +194,14 @@ async def metrics():
         "# HELP docker_proxy_log_target_publication_failures_total Total failed or empty log target publication attempts.",
         "# TYPE docker_proxy_log_target_publication_failures_total counter",
         f"docker_proxy_log_target_publication_failures_total {LOG_TARGET_PUBLICATION_FAILURES}",
+        "# HELP docker_proxy_log_target_info Allowlisted Promtail target path mapped to its Compose service.",
+        "# TYPE docker_proxy_log_target_info gauge",
     ]
+    lines.extend(
+        'docker_proxy_log_target_info{service="'
+        f'{prometheus_label(service)}",path="{prometheus_label(path)}"}} 1'
+        for service, path in LOG_TARGET_INFO
+    )
     return Response("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
