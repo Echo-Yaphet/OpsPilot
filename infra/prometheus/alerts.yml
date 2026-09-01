@@ -14,8 +14,25 @@ groups:
         annotations:
           summary: "MySQL is unavailable to {{ $labels.service }}"
       - alert: ContainerHighCPU
-        expr: container_cpu_usage_ratio{service="payment-service"} > 0.8
+        expr: container_cpu_usage_ratio > on(service) container_cpu_alert_threshold_ratio
         for: 10s
         labels: {severity: warning}
         annotations:
           summary: "Container CPU usage is high on {{ $labels.service }}"
+      - alert: ContainerMetricsExporterDown
+        expr: up{job="container-metrics"} == 0
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: "Container metrics exporter is unavailable"
+      - alert: ContainerMetricsCollectionFailed
+        expr: container_cpu_metrics_up == 0
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: "Container CPU collection failed for {{ $labels.service }}"
+      - alert: ContainerMetricsDataStale
+        expr: (time() - container_cpu_metrics_last_success_timestamp_seconds > 60) and (container_cpu_metrics_last_success_timestamp_seconds > 0)
+        labels: {severity: warning}
+        annotations:
+          summary: "Container CPU metrics are stale for {{ $labels.service }}"

@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-01 (real container CPU observability and incident-loop milestone)
+Last updated: 2026-09-01 (container metrics health and per-service CPU policy milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Real container CPU metrics, alerting, and non-executing incident-loop integration are complete without widening Docker socket ownership. Continue with the next production-safety milestone while keeping the Redis incident flow green.
+4. Real container CPU metrics now include strict per-service thresholds plus exporter-down, target-collection-failure, and stale-sample alerting without widening Docker socket ownership. Continue with Promtail socket-discovery hardening while keeping the CPU and Redis incident flows green.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -35,8 +35,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Three FastAPI sample applications: `user-service`, `order-service`, and `payment-service`.
 - MySQL 8.4 and Redis 7.4 dependencies.
 - Prometheus scraping all three applications every five seconds.
-- Prometheus rules for Redis down, MySQL down, and sustained real payment-service container CPU usage.
-- A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage plus collection health.
+- Prometheus rules for Redis down, MySQL down, sustained per-service container CPU usage, exporter loss, target collection failures, and stale CPU samples.
+- A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage, collection health, last-success time, and strictly validated per-service alert thresholds.
 - Loki and Promtail collect Docker logs.
 - Grafana has provisioned Prometheus and Loki data sources.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
@@ -128,6 +128,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the container metrics health and per-service CPU policy milestone:
+
+- The rebuilt current-source test image passed all 87 backend tests; the only warning remains the existing LangGraph dependency deprecation notice. New coverage verifies distinct per-service thresholds, exact target coverage, invalid-value rejection, retained last-success timestamps across target failures, and the prior per-target fail-open behavior.
+- Compose validation and Prometheus `promtool` configuration/rule checks passed with six rules. The rebuilt exporter and reloaded Prometheus exposed active `0.8` thresholds for all three services; smoke additionally proved payment-service collection healthy, threshold active, and last-success age below 30 seconds.
+- A real restricted-Proxy outage produced `container_cpu_metrics_up=0` plus firing `ContainerMetricsCollectionFailed` and `ContainerMetricsDataStale` alerts for all three services. Restarting the Proxy restored metrics to `1` and cleared both alert types.
+- A bounded payment-service CPU fault reached about `1.0009` cores and fired `ContainerHighCPU` through the label-matched `0.8` threshold. Alertmanager created only a recommendation incident with root cause `Container CPU usage is high`, confidence `0.9`, no execution or verification claim, and then updated it to `alert_resolved`.
+- A real Redis outage still produced `dependency_up=0`, confidence `0.92`, recommendation-only non-execution, and `awaiting_approval` without approval. Explicit approval restarted Redis through Gateway/Proxy and reached `resolved`, `verified=true` on verification attempt three.
+- Live Gateway checks returned 401 without identity, 403 for an authenticated unknown target, 200 once then 401 on replay. Proxy stats returned 401 without identity, 200 for an allowlisted business service, 403 for a denied stats target, and 404 for a raw route. Only the Proxy mounted the Docker socket, and Control API still could not resolve its isolated network name.
 
 Latest verification for the real container CPU observability and incident-loop milestone:
 
@@ -385,7 +394,7 @@ Local entry points:
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
-- CPU observation now uses real Docker CPU counters, but the local exporter polls on scrape, covers only the three business services, uses the local shared proxy token, and has no separate alert yet for collection-health loss or stale samples.
+- CPU observation now uses real Docker counters with strict per-service thresholds and health/staleness alerts, but the local exporter still polls on scrape, covers only the three business services, uses the local shared proxy token, and requires recreation to change targets or thresholds. Last-success timestamps are process-local and reset when the exporter restarts.
 - Promtail still mounts the Docker socket for container log discovery. It is outside the Gateway/Proxy execution and CPU metrics paths, but production should replace that discovery mechanism or isolate it with a narrower runtime interface.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
@@ -494,6 +503,13 @@ Local entry points:
 - Preserved bounded fault duration, Alertmanager non-execution, explicit policy and approval gates, Verification snapshots, revision rollback protections, and Gateway/Proxy isolation.
 - Revalidated live CPU firing/resolution, persisted recommendation-only handling, the full Redis approval/recovery path, identity/replay/target denials, socket ownership, Compose, smoke, and the complete test suite.
 
+### Completed: container metrics health and per-service CPU policy
+
+- Added strict startup validation for exact per-target CPU thresholds and exported the active threshold for Prometheus label matching.
+- Added retained last-success timestamps plus distinct alerts for exporter unavailability, per-target collection failure, and stale samples.
+- Strengthened smoke to verify collection health, the active payment-service threshold, and fresh samples.
+- Revalidated failure/staleness firing and recovery, threshold-driven real CPU firing/resolution, Alertmanager non-execution, the Redis approval/recovery path, and all Gateway/Proxy isolation boundaries.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -502,10 +518,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
-- Add exporter collection-health/staleness alerting and configurable per-service CPU thresholds before expanding CPU remediation or coverage beyond the three business services.
+- Replace Promtail's Docker-socket discovery with a narrower log-ingestion boundary before expanding CPU remediation or coverage beyond the three business services.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Real CPU metrics/alerting/RCA, signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded parallel fan-out, partial-failure retention, and explicit desired/converged/degraded/stalled reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, deterministic plus optional semantic retrieval, persistent incidents, exact execution policy, and separate audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Implement one next production-safety milestone, run `make test`, rebuild affected images, run `make smoke`, perform live acceptance, and update this handoff before declaring completion.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `docker compose ps` and `make smoke` to refresh the actual baseline. The default stack has 15 services, including a socketless real container CPU exporter; the optional `policy-rollout` profile adds an authenticated read-only distributor and an independent canary Control API. The persistent primary policy history has accepted revision 104, so future strict bundles must use a higher revision. Real CPU metrics now use strict exported per-service thresholds and include exporter-down, per-target collection-failure, and stale-sample alerts; CPU Alertmanager handling remains recommendation-only. Signed bundles, durable rollback protection, authenticated pull distribution, accepted-only caches, request-bound replay-safe peer status, bounded fan-out, and rollout-state reporting are complete. Safe Gateway identity rotation, immutable recovery snapshots, configurable verification, the restricted Docker proxy, incident-time correlation, retrieval, persistence, execution policy, and audit stores remain green. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, the original `OpsTools` methods, Dashboard evidence formats, Alertmanager non-execution, and independent policy/human approval gates. Do not introduce unauthenticated policy writes or active-active incident writes. Next, replace Promtail's Docker-socket discovery with a narrower log-ingestion boundary, then run `make test`, rebuild affected images, run `make smoke`, perform live CPU and Redis acceptance, and update this handoff.

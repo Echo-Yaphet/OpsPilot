@@ -214,6 +214,7 @@ services:
       DOCKER_PROXY_URL: http://docker-proxy:2375
       DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
       CONTAINER_METRICS_TARGETS: user-service,order-service,payment-service
+      CONTAINER_CPU_THRESHOLDS: '${CONTAINER_CPU_THRESHOLDS:-{"user-service":0.8,"order-service":0.8,"payment-service":0.8}}'
     networks: [opspilot, executor-runtime]
     depends_on: [docker-proxy]
 

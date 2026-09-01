@@ -90,7 +90,13 @@ make fault-mysql   # 停止 MySQL，并触发三个服务的健康检查
 make recover       # 启动 Redis/MySQL 并重启 payment-service
 ```
 
-CPU 场景现在使用真实 Docker CPU 计数器。`container-metrics-exporter` 通过受限代理的认证 stats 路由导出 `container_cpu_usage_ratio` 和 `container_cpu_metrics_up`；Prometheus 对 payment-service 持续高于 `0.8` 核 10 秒触发 `ContainerHighCPU`。告警经现有 Alertmanager webhook 创建只建议 incident，确定性 RCA 返回 `Container CPU usage is high`，置信度 `0.9`，并建议在显式人工审批后重启 payment-service；Alertmanager 自身永不请求执行。30 秒脚本和 Dashboard 的 15 秒动作仍保持有界。MySQL 场景继续使用同一条确定性 RCA 链路。
+CPU 场景现在使用真实 Docker CPU 计数器。`container-metrics-exporter` 通过受限代理的认证 stats 路由导出 CPU 用量、采集健康、最后成功时间和生效阈值。`CONTAINER_CPU_THRESHOLDS` 必须以 JSON 对象精确配置全部采集目标，值表示主机 CPU 核数且范围为 `(0, 1024]`；默认三个业务服务均为 `0.8`：
+
+```bash
+CONTAINER_CPU_THRESHOLDS={"user-service":0.7,"order-service":0.8,"payment-service":0.9}
+```
+
+Prometheus 通过 `service` 标签匹配用量与阈值，持续超过阈值 10 秒触发 `ContainerHighCPU`。exporter 不可抓取 30 秒触发 `ContainerMetricsExporterDown`，单服务采集失败 30 秒触发 `ContainerMetricsCollectionFailed`，最后成功样本超过 60 秒触发 `ContainerMetricsDataStale`。高 CPU 告警经现有 Alertmanager webhook 创建只建议 incident，确定性 RCA 返回 `Container CPU usage is high`，置信度 `0.9`，并建议在显式人工审批后重启对应服务；Alertmanager 自身永不请求执行。30 秒脚本和 Dashboard 的 15 秒动作仍保持有界。MySQL 场景继续使用同一条确定性 RCA 链路。
 
 ## 目录结构
 
