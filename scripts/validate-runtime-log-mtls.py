@@ -11,20 +11,28 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-PKI_DIR = Path(
-    os.getenv("RUNTIME_LOG_PKI_DIR", PROJECT_ROOT / "work/runtime-log-pki")
+SECRET_DIR = Path(
+    os.getenv(
+        "RUNTIME_LOG_SECRET_DIR", PROJECT_ROOT / "work/runtime-log-secrets"
+    )
 )
+GATEWAY_DIR = SECRET_DIR / "current" / "gateway"
+CLIENTS_DIR = SECRET_DIR / "current" / "clients"
 ADDRESS = ("127.0.0.1", 1514)
 SERVER_NAME = "host.docker.internal"
+REVOKED_CERTIFICATE = os.getenv("RUNTIME_LOG_REVOKED_CLIENT_CERT")
+REVOKED_PRIVATE_KEY = os.getenv("RUNTIME_LOG_REVOKED_CLIENT_KEY")
 
 
 def tls_context(client_name: str | None = None) -> ssl.SSLContext:
-    context = ssl.create_default_context(cafile=PKI_DIR / "ca.pem")
+    client_dir = CLIENTS_DIR / client_name if client_name else None
+    ca_file = client_dir / "ca.pem" if client_dir else GATEWAY_DIR / "ca.pem"
+    context = ssl.create_default_context(cafile=ca_file)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     if client_name:
         context.load_cert_chain(
-            certfile=PKI_DIR / f"{client_name}-cert.pem",
-            keyfile=PKI_DIR / f"{client_name}-key.pem",
+            certfile=client_dir / "cert.pem",
+            keyfile=client_dir / "key.pem",
         )
     return context
 
@@ -52,6 +60,29 @@ def prove_wrong_server_name_is_rejected() -> None:
     except ssl.SSLCertVerificationError:
         return
     raise RuntimeError("runtime log client accepted a certificate for the wrong server")
+
+
+def prove_revoked_client_is_rejected() -> None:
+    if not REVOKED_CERTIFICATE and not REVOKED_PRIVATE_KEY:
+        return
+    if not REVOKED_CERTIFICATE or not REVOKED_PRIVATE_KEY:
+        raise RuntimeError("both revoked client certificate and key are required")
+    context = ssl.create_default_context(cafile=GATEWAY_DIR / "ca.pem")
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    context.load_cert_chain(REVOKED_CERTIFICATE, REVOKED_PRIVATE_KEY)
+    try:
+        with socket.create_connection(ADDRESS, timeout=3) as connection:
+            with context.wrap_socket(
+                connection, server_hostname=SERVER_NAME
+            ) as secured:
+                secured.sendall(b"revoked runtime log identity probe\n")
+                if secured.recv(1) == b"":
+                    print("revoked runtime log client certificate rejected")
+                    return
+    except (ssl.SSLError, ConnectionError):
+        print("revoked runtime log client certificate rejected")
+        return
+    raise RuntimeError("runtime log receiver accepted a revoked client certificate")
 
 
 def send_authenticated_probe() -> str:
@@ -94,6 +125,7 @@ def wait_for_loki(marker: str) -> None:
 def main() -> None:
     prove_missing_client_certificate_is_rejected()
     prove_wrong_server_name_is_rejected()
+    prove_revoked_client_is_rejected()
     marker = send_authenticated_probe()
     wait_for_loki(marker)
     print("runtime log mTLS authentication and Loki delivery verified")

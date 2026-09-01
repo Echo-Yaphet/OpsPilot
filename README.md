@@ -17,7 +17,26 @@ docker compose ps
 make smoke
 ```
 
-`make up` 会先在被 Git 忽略的 `work/runtime-log-pki` 生成本地 CA、服务端证书和三份独立客户端证书；完整材料默认复用，避免普通重启意外轮换身份。直接使用 `docker compose up` 前应先运行 `make runtime-log-pki`。Docker daemon 读取客户端证书时需要绝对宿主路径；项目不在默认目录时，在 `.env` 中把 `RUNTIME_LOG_PKI_DIR` 设置为对应的绝对路径。证书和私钥不会进入镜像或 Git。显式轮换可使用 `RUNTIME_LOG_PKI_FORCE=true make runtime-log-pki`，但必须紧接着重建 Promtail 和三个业务服务；当前本地引导尚不提供生产级无损轮换。
+`make up` 会先准备被 Git 忽略的 `work/runtime-log-secrets` 投影。未配置外部来源时，本地开发 CA 仍在 `work/runtime-log-pki` 生成并复用，再通过与生产相同的严格导入器投影；运行时目录不包含 CA 私钥。直接使用 `docker compose up` 前应先运行 `make runtime-log-pki`。Docker daemon 读取客户端证书时需要绝对宿主路径；项目不在默认目录时，在 `.env` 中把 `RUNTIME_LOG_SECRET_DIR` 设置为对应绝对路径。证书和私钥不会进入镜像或 Git。
+
+### 外部 PKI / Secret 交付与无中断轮换
+
+外部 PKI 或 Secret agent 应把一个完整版本投递到独立暂存目录，再设置 `RUNTIME_LOG_SECRET_SOURCE_DIR`。目录必须含 `bundle.json`（只允许 `version`、`issuer`）、`ca.pem` 信任 bundle、`server-cert.pem`、`server-key.pem`，以及 `user-service`、`order-service`、`payment-service` 各自的 `*-cert.pem`/`*-key.pem`；可选 `crl.pem` 启用叶证书 CRL 检查。导入器会验证版本不可变、有效期、服务端 `host.docker.internal` SAN、server/client EKU、证书与私钥匹配、三项客户端 CN 和 CRL，然后只投影网关所需的 server key/trust/CRL 与每项客户端自己的材料。源目录中的 CA 私钥即使存在也永不投影给运行时。
+
+```bash
+RUNTIME_LOG_SECRET_SOURCE_DIR=/run/secrets/opspilot-runtime-log \
+RUNTIME_LOG_SECRET_DIR=/absolute/host/path/runtime-log-secrets \
+make runtime-log-pki
+```
+
+安全轮换使用两次外部版本发布：先发布同时信任旧/新签发链、但尚未吊销旧客户端的重叠 bundle；再发布保留当前身份并加入 CRL（或移除旧根）的退役 bundle。每次运行：
+
+```bash
+RUNTIME_LOG_SECRET_SOURCE_DIR=/run/secrets/opspilot-runtime-log \
+make runtime-log-rotate
+```
+
+轮换器会先证明现有三个客户端仍被新信任 bundle 接受、当前服务器仍被新 trust bundle 接受，拒绝没有安全重叠的切换。跨 CA 切换严格分三阶段：先只扩展网关 trust/CRL 并第一次 HUP；再按 user/order/payment 顺序滚动客户端到新身份与新 trust；最后才投影新服务器身份并第二次 HUP。每次 HUP 都先以新 TLS context 在 1514 上建立替代监听，再关闭旧监听并让现有连接重新认证，不重启 Promtail。每项客户端重建都等待健康，最后重新验证无客户端证书拒绝、错误主机名拒绝、合法 mTLS 与 Loki 投递，并确认 Promtail 容器 ID 未改变。Docker Desktop 的 daemon-side syslog 驱动通过一次只读目录同步规避原子 inode 更新的可见性窗口；Linux daemon 上该步骤无副作用。
 
 入口：
 

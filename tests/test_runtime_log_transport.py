@@ -26,11 +26,15 @@ def test_business_services_use_distinct_mtls_syslog_credentials():
         assert logging["driver"] == "syslog"
         assert "tcp+tls://" in options["syslog-address"]
         assert options["syslog-tls-skip-verify"] == "false"
-        assert options["syslog-tls-ca-cert"].endswith("/ca.pem")
-        assert options["syslog-tls-cert"].endswith(
-            f"/{service_name}-cert.pem"
+        assert options["syslog-tls-ca-cert"].endswith(
+            f"/current/clients/{service_name}/ca.pem"
         )
-        assert options["syslog-tls-key"].endswith(f"/{service_name}-key.pem")
+        assert options["syslog-tls-cert"].endswith(
+            f"/current/clients/{service_name}/cert.pem"
+        )
+        assert options["syslog-tls-key"].endswith(
+            f"/current/clients/{service_name}/key.pem"
+        )
 
 
 def test_promtail_requires_ca_verified_client_certificates():
@@ -57,12 +61,10 @@ def test_promtail_requires_ca_verified_client_certificates():
 def test_promtail_mount_excludes_ca_and_client_private_keys():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     volumes = compose["services"]["promtail"]["volumes"]
-    pki_mounts = [volume for volume in volumes if "/etc/promtail/pki/" in volume]
+    pki_mounts = [volume for volume in volumes if "/etc/promtail/pki" in volume]
 
-    assert len(pki_mounts) == 3
-    assert any("/server-cert.pem:" in volume for volume in pki_mounts)
-    assert any("/server-key.pem:" in volume for volume in pki_mounts)
-    assert any("/ca.pem:" in volume for volume in pki_mounts)
+    assert len(pki_mounts) == 1
+    assert pki_mounts[0].endswith("/current/gateway:/etc/promtail/pki:ro")
     assert all("ca-key.pem" not in volume for volume in pki_mounts)
     assert all("-service-key.pem" not in volume for volume in pki_mounts)
 
@@ -78,3 +80,45 @@ def _load_gateway_module():
 def test_generated_runtime_log_private_keys_are_git_ignored():
     gitignore = (ROOT / ".gitignore").read_text().splitlines()
     assert "work/runtime-log-pki/" in gitignore
+    assert "work/runtime-log-secrets/" in gitignore
+
+
+def test_gateway_supports_zero_listener_gap_tls_reload_and_crl():
+    source = GATEWAY_PATH.read_text()
+    assert "signal.SIGHUP" in source
+    assert "reuse_port=True" in source
+    assert "ssl.VERIFY_CRL_CHECK_LEAF" in source
+    assert "reload_tls_server" in source
+    assert "ACTIVE_CLIENTS" in source
+    assert "reauthenticating" in source
+    validator = (ROOT / "scripts/validate-runtime-log-mtls.py").read_text()
+    assert "RUNTIME_LOG_REVOKED_CLIENT_CERT" in validator
+    assert "prove_revoked_client_is_rejected" in validator
+
+
+def test_runtime_log_secret_installer_projects_only_scoped_material():
+    installer = (ROOT / "scripts/install-runtime-log-secrets.py").read_text()
+    rotation = (ROOT / "scripts/rotate-runtime-log-certificates.sh").read_text()
+
+    assert 'set(metadata) != {"version", "issuer"}' in installer
+    assert '"gateway-trust"' in installer
+    assert '"gateway-identity"' in installer
+    assert '"-checkhost", "host.docker.internal"' in installer
+    assert '"-purpose", "sslclient"' in installer
+    assert 'gateway / "server-key.pem"' in installer
+    assert 'clients / service' in installer
+    assert 'gateway / "ca-key.pem"' not in installer
+    assert 'gateway / f"{service}-key.pem"' not in installer
+    assert 'atomic=False' in installer
+    assert "docker compose kill -s HUP promtail" in rotation
+    assert "--force-recreate \"$service\"" in rotation
+    assert 'recreate_attempt" -ge 5' in rotation
+    assert "opspilot-runtime-log-clients:ro" in rotation
+    assert "current_certificate" in rotation
+    assert "openssl verify -purpose sslclient" in rotation
+    assert "openssl verify -purpose sslserver" in rotation
+    assert "RUNTIME_LOG_SECRET_INSTALL_PHASE=gateway-trust" in rotation
+    assert "RUNTIME_LOG_SECRET_INSTALL_PHASE=clients" in rotation
+    assert "RUNTIME_LOG_SECRET_INSTALL_PHASE=gateway-identity" in rotation
+    assert "promtail_id_before" in rotation
+    assert 'promtail_id_before" != "$promtail_id_after' in rotation

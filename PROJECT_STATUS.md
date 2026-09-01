@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-01 (authenticated mTLS runtime log transport milestone)
+Last updated: 2026-09-02 (external runtime-log PKI and zero-listener-gap rotation milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. All three business services now forward Docker logs over mutually authenticated TLS RFC5424 syslog. TCP 1514 rejects clients without a trusted certificate, while Promtail's plaintext receiver is reachable only on the same container's loopback. Continue with externally managed certificate issuance and rotation before treating the local PKI as production-ready.
+4. Runtime-log identity is now imported from versioned externally issued Secret bundles with strict certificate/key/identity validation, immutable archives, CRL enforcement, least-privilege projections, and overlap-gated rotation. TCP 1514 hot-swaps its listener and reauthenticates active clients without restarting Promtail; the three services then roll independently while retaining strict hostname verification, loopback-only plaintext, Loki labels, and freshness.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -37,7 +37,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Prometheus scraping all three applications every five seconds.
 - Prometheus rules for Redis down, MySQL down, sustained per-service container CPU usage, exporter loss, target collection failures, and stale CPU samples.
 - A socketless exporter reads only trimmed CPU counters through an authenticated, allowlisted proxy stats route and exposes per-service CPU usage, collection health, last-success time, and strictly validated per-service alert thresholds.
-- Loki and Promtail collect `user-service`, `order-service`, and `payment-service` through Docker runtime mTLS RFC5424 syslog forwarding. Each service uses a distinct client certificate; the published receiver verifies the local CA, server hostname, client certificate, and allowed service CN before forwarding only to Promtail's container-loopback listener. The runtime pipeline retains the existing `compose_service` and `container` Loki labels without giving Promtail Docker socket or host-log access.
+- Loki and Promtail collect `user-service`, `order-service`, and `payment-service` through Docker runtime mTLS RFC5424 syslog forwarding. Each service uses a distinct externally issuable client certificate; the receiver verifies the trust bundle, optional CRL, server hostname, client certificate, and allowed service CN before forwarding only to Promtail's container-loopback listener. Versioned Secret import projects no CA private key, gives Promtail no client key, and supports overlap-gated hot rotation without changing `compose_service` or `container` labels.
 - Prometheus derives all three per-service freshness signals from the label-preserving Promtail runtime counter. `ServiceLogCollectionStale` retains affected-service isolation, while the stack-level Loki-ingestion alert remains the downstream fallback; file-target publication and positions are no longer part of the deployed path.
 - Grafana has provisioned Prometheus and Loki data sources.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
@@ -129,6 +129,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the external runtime-log PKI and zero-listener-gap rotation milestone:
+
+- The rebuilt current-source suite passed all 100 backend tests with the existing single LangGraph deprecation warning. Compose validation, Promtail 3.5.3 syntax validation, `promtool` validation with nine rules, the rebuilt 15-service stack, and final smoke passed.
+- A second independently generated CA/server/three-client set was delivered as an external-version simulation with old/new trust overlap. Import rejected unsafe material by validating expiry, server hostname, EKUs, certificate/key pairs, per-service CNs, CRL, and immutable version contents; the runtime projection contained no CA private key, and Promtail's projection contained no client key.
+- A real cross-CA rotation used the strict gateway-trust -> rolling clients -> gateway-identity sequence. Both TCP 1514 hot reloads kept the same Promtail container/process and reauthenticated three active streams after binding the replacement listener. Missing-client and wrong-hostname probes stayed rejected; the new payment identity reached Loki. A follow-up bundle carried a real CRL: active identities remained healthy and a newly issued then revoked client was rejected by the live gateway.
+- During rotation and afterward Loki retained `compose_service` and `/opspilot-<service>-1` `container` labels, all three freshness series were `1`, and Promtail stayed socketless with plaintext only on `127.0.0.1:1515`. A subsequent isolated user stop produced freshness `0/1/1`, fired only `ServiceLogCollectionStale{service="user-service"}`, and reused recommendation-only incident `90cc70f6-700e-44f0-8be2-dd83bd498a93` without execution or Verification; restart cleared the firing alert.
+- A bounded payment CPU fault reached about `1.001` cores, fired then resolved `ContainerHighCPU`, and kept incident `e63a03ee-a5e4-4f3d-b240-2a9079268ec5` recommendation-only with confidence `0.9`, no execution, and no Verification. A real Redis outage produced `dependency_up=0`; recommendation-only incident `664740ab-8db8-47d2-b6c1-7005643f3453` did not execute, missing approval left Redis exited in `awaiting_approval`, and explicit approval recovered through Gateway/Proxy to incident `beae1cf9-64c5-4e32-83b0-4f659d76d50d`, `resolved`, `verified=true` on attempt three.
+- Gateway returned 401 without identity, 200 once then 401 on replay, and 403 for an authenticated unknown target. Proxy returned 401 without identity, 200 for allowlisted stats, 403 for denied stats, and 404 for the raw Docker route. Control API could not resolve the isolated Proxy; only Proxy mounted the Docker socket.
 
 Latest verification for the authenticated mTLS runtime log transport milestone:
 
@@ -445,6 +454,9 @@ Local entry points:
 - `infra/prometheus/alerts.yml`: alert rules.
 - `infra/alertmanager/alertmanager.yml`: grouped webhook delivery to the Control API.
 - `scripts/generate-runtime-log-pki.sh`: idempotent local CA/server/per-service client certificate bootstrap outside Git.
+- `scripts/install-runtime-log-secrets.py`: strict external bundle validation, immutable version storage, and least-privilege runtime projection.
+- `scripts/prepare-runtime-log-secrets.sh`: external-source import with a development-only local PKI fallback.
+- `scripts/rotate-runtime-log-certificates.sh`: overlap preflight, hot gateway reload, Docker Desktop projection sync, rolling clients, and continuity validation.
 - `scripts/validate-runtime-log-mtls.py`: live missing-client, wrong-server-name, and authenticated Loki-delivery acceptance.
 - `tests/test_workflow.py`: approval, policy allow/deny, Redis-path, graph inspection, inconclusive RCA, verification failure, and stale-log precedence tests.
 
@@ -456,7 +468,7 @@ Local entry points:
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation now uses real Docker counters with strict per-service thresholds and health/staleness alerts, but the local exporter still polls on scrape, covers only the three business services, uses the local shared proxy token, and requires recreation to change targets or thresholds. Last-success timestamps are process-local and reset when the exporter restarts.
-- Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack no longer configures Proxy file discovery, shared target files, or persisted positions. TCP 1514 now requires locally issued client certificates and strict server-name verification, with plaintext confined to the Promtail container loopback. The local CA private key and long-lived certificates still live under the Git-ignored `work/` directory; production needs external PKI/secret delivery, revocation, and rotation rather than this developer bootstrap. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
+- Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack no longer configures Proxy file discovery, shared target files, or persisted positions. External PKI/Secret systems still need an operator-specific delivery agent/controller, but OpsPilot now consumes their versioned bundles, validates identity and key material, enforces CRLs, prevents version mutation, projects least-privilege runtime directories, and performs overlap-gated hot rotation. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
 - The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
@@ -614,6 +626,13 @@ Local entry points:
 - Added atomic local PKI generation outside Git, minimum Promtail key mounts that exclude CA/client private keys, permanent runtime privilege drop, and smoke checks for missing-client rejection, wrong-server rejection, authenticated Loki delivery, labels, and freshness.
 - Revalidated isolated freshness alerting, real CPU recommendation-only handling, the full Redis approval/recovery path, Gateway/Proxy denials, network isolation, sole socket ownership, Compose, Promtail, Prometheus, smoke, and the complete test suite.
 
+### Completed: external runtime-log PKI and zero-listener-gap rotation
+
+- Added a strict versioned bundle contract for external PKI/Secret delivery, including server/client EKU, hostname, CN, key-pair, expiry, immutable-version, and optional CRL validation before any runtime projection changes.
+- Split runtime material into a server-only gateway projection and one projection per client; CA private keys are never copied, Promtail cannot access client keys, and each Docker logger receives only its own identity plus public trust.
+- Added overlap preflight and two-phase rotation: the replacement TLS listener binds before the old listener closes, active streams reauthenticate, Promtail keeps running, and user/order/payment roll one at a time with health and final Loki checks. Unsafe no-overlap trust changes fail before installation.
+- Revalidated a real second-CA rotation, CRL rejection, label/freshness compatibility, isolated stale-log alerting, CPU recommendation-only behavior, Redis recommendation/approval/recovery, identity/replay/target/raw-route denials, network isolation, socket ownership, Compose, Promtail, Prometheus, smoke, and the complete test suite.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -622,10 +641,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
-- Move runtime-log certificate issuance, storage, revocation, and rotation to an external PKI/secret system; retain distinct service identities, strict hostname verification, loopback-only plaintext, socketless collection, and compatible Loki labels while rotating without ingestion gaps.
+- Connect the versioned runtime-log bundle contract to the target platform's concrete Secret delivery controller (for example Vault Agent or a cloud secret CSI driver); the local repository intentionally remains provider-neutral and retains the development-only CA fallback.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `git status --short --branch`, `docker compose ps`, `docker compose config --quiet`, and `make smoke`. The default stack has 15 services; the persistent primary Verification-policy history has accepted signed revision 104. All three business services now use distinct client certificates with Docker `tcp+tls` RFC5424 forwarding to the Promtail container's mTLS gateway; plaintext is loopback-only, and Promtail sees only its server key/cert plus CA public cert, with no host Docker-log, target, positions, client-key, CA-key, or socket mount. Existing `compose_service`/`container` Loki labels, three-service freshness, CPU/Redis loops, Alertmanager recommendation-only behavior, independent policy/approval gates, and Gateway/Proxy isolation remain verified. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard formats, revision >104 rule, and protected IDE/system files. Next externalize runtime-log PKI and implement safe certificate rotation without ingestion gaps; rerun full tests, deployment, live acceptance, docs, functional-only staging, commit, and push.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `git status --short --branch`, `docker compose ps`, `docker compose config --quiet`, and `make smoke`. The default stack has 15 services; the persistent primary Verification-policy history has accepted signed revision 104. Runtime-log certificates now arrive through a provider-neutral, versioned external Secret bundle contract with strict identity/key validation, immutable archives, CRL enforcement, least-privilege server/per-client projections, and a real cross-CA gateway-trust -> rolling-clients -> gateway-identity rotation that never restarts Promtail. Plaintext remains loopback-only; Loki labels/freshness, CPU/Redis loops, Alertmanager recommendation-only behavior, independent policy/approval gates, and Gateway/Proxy isolation remain verified. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard formats, revision >104 rule, and protected IDE/system files. Next connect this contract to the chosen platform's concrete Vault Agent/cloud Secret CSI delivery controller, retaining provider-neutral validation and rollback safety; rerun full tests, deployment, live acceptance, docs, functional-only staging, commit, and push.

@@ -11,7 +11,7 @@ elif [ "$#" -gt 0 ]; then
   exit 2
 fi
 
-required_files="ca-key.pem ca.pem server-key.pem server-cert.pem"
+required_files="bundle.json ca-key.pem ca.pem server-key.pem server-cert.pem"
 for service in user-service order-service payment-service; do
   required_files="$required_files $service-key.pem $service-cert.pem"
 done
@@ -89,6 +89,9 @@ done
 rm -f "$temporary_dir"/*.csr "$temporary_dir"/*-ext.cnf "$temporary_dir"/*.srl
 chmod 600 "$temporary_dir"/*-key.pem
 chmod 644 "$temporary_dir"/*-cert.pem "$temporary_dir/ca.pem"
+bundle_version="local-$(date -u +%Y%m%dT%H%M%SZ)"
+printf '{"version":"%s","issuer":"OpsPilot local development PKI"}\n' \
+  "$bundle_version" >"$temporary_dir/bundle.json"
 
 if [ -d "$output_dir" ]; then
   backup_dir="$output_dir.previous.$$"

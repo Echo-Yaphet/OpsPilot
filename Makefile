@@ -1,10 +1,13 @@
-.PHONY: up down ps logs test smoke runtime-log-pki dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
+.PHONY: up down ps logs test smoke runtime-log-pki runtime-log-rotate dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
 
 up: runtime-log-pki
 	docker compose up -d --build
 
 runtime-log-pki:
-	./scripts/generate-runtime-log-pki.sh
+	./scripts/prepare-runtime-log-secrets.sh
+
+runtime-log-rotate:
+	./scripts/rotate-runtime-log-certificates.sh
 
 down:
 	docker compose down
@@ -16,7 +19,7 @@ logs:
 	docker compose logs -f --tail=100
 
 test:
-	docker compose run --rm control-api python -m pytest -q
+	docker compose run --rm -v ./scripts:/app/scripts:ro control-api python -m pytest -q
 
 smoke:
 	./scripts/smoke-test.sh
