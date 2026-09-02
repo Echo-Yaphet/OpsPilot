@@ -7,6 +7,10 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+
 
 class IdentityError(ValueError):
     pass
@@ -127,3 +131,124 @@ def verify_identity(
     if claims["exp"] <= claims["iat"] or claims["exp"] - claims["iat"] > maximum_ttl_seconds:
         raise IdentityError("credential lifetime is invalid")
     return {**claims, "key_id": token_key_id}
+
+
+def mint_external_identity(
+    private_key_pem: bytes,
+    *,
+    key_id: str,
+    issuer: str,
+    audience: str,
+    subject: str,
+    ttl_seconds: int,
+    method: str,
+    path: str,
+    operation: str,
+    target: str,
+    now: int | None = None,
+    credential_id: str | None = None,
+) -> str:
+    """Mint an RS256 credential. Only the external issuer should call this."""
+    if not 1 <= ttl_seconds <= 60:
+        raise IdentityError("identity TTL must be between 1 and 60 seconds")
+    issued_at = int(time.time()) if now is None else now
+    header = {"alg": "RS256", "kid": key_id, "typ": "JWT"}
+    claims = {
+        "iss": issuer, "aud": audience, "sub": subject, "iat": issued_at,
+        "exp": issued_at + ttl_seconds, "jti": credential_id or str(uuid.uuid4()),
+        "method": method.upper(), "path": path, "operation": operation, "target": target,
+    }
+    encoded_header = _encode(json.dumps(header, sort_keys=True, separators=(",", ":")).encode())
+    encoded_claims = _encode(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode())
+    signed = f"{encoded_header}.{encoded_claims}".encode()
+    key = serialization.load_pem_private_key(private_key_pem, password=None)
+    signature = key.sign(signed, padding.PKCS1v15(), hashes.SHA256())
+    return f"{signed.decode()}.{_encode(signature)}"
+
+
+def verify_external_identity(
+    token: str,
+    public_key_pem: bytes,
+    *,
+    key_id: str,
+    issuer: str,
+    audience: str,
+    method: str,
+    path: str,
+    maximum_ttl_seconds: int,
+    clock_skew_seconds: int = 2,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Verify an externally issued RS256 credential and its request bindings."""
+    try:
+        encoded_header, encoded_claims, encoded_signature = token.split(".")
+        header = json.loads(_decode(encoded_header))
+        claims = json.loads(_decode(encoded_claims))
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise IdentityError("credential encoding is invalid") from exc
+    if header != {"alg": "RS256", "kid": key_id, "typ": "JWT"}:
+        raise IdentityError("credential header or external issuer key ID is invalid")
+    try:
+        key = serialization.load_pem_public_key(public_key_pem)
+        key.verify(
+            _decode(encoded_signature), f"{encoded_header}.{encoded_claims}".encode(),
+            padding.PKCS1v15(), hashes.SHA256(),
+        )
+    except (ValueError, TypeError, InvalidSignature) as exc:
+        raise IdentityError("credential signature is invalid") from exc
+    required = {"iss", "aud", "sub", "iat", "exp", "jti", "method", "path", "operation", "target"}
+    if not isinstance(claims, dict) or not required.issubset(claims):
+        raise IdentityError("credential claims are incomplete")
+    if claims["iss"] != issuer or claims["aud"] != audience:
+        raise IdentityError("credential issuer or audience is invalid")
+    if claims["method"] != method.upper() or claims["path"] != path:
+        raise IdentityError("credential is not bound to this request")
+    if not all(isinstance(claims[key], str) and claims[key] for key in ("sub", "jti", "operation", "target")):
+        raise IdentityError("credential string claims are invalid")
+    current = int(time.time()) if now is None else now
+    if not isinstance(claims["iat"], int) or not isinstance(claims["exp"], int):
+        raise IdentityError("credential timestamps are invalid")
+    if claims["iat"] > current + clock_skew_seconds:
+        raise IdentityError("credential is not active yet")
+    if claims["exp"] < current - clock_skew_seconds:
+        raise IdentityError("credential has expired")
+    if claims["exp"] <= claims["iat"] or claims["exp"] - claims["iat"] > maximum_ttl_seconds:
+        raise IdentityError("credential lifetime is invalid")
+    return {**claims, "key_id": key_id}
+
+
+def sign_issuer_request(private_key_pem: bytes, subject: str, payload: Mapping[str, Any], *, now: int | None = None, nonce: str | None = None) -> dict[str, str]:
+    """Create a short-lived proof that lets one workload call the external issuer."""
+    timestamp = str(int(time.time()) if now is None else now)
+    request_nonce = nonce or str(uuid.uuid4())
+    canonical = json.dumps(
+        {"nonce": request_nonce, "payload": dict(payload), "subject": subject, "timestamp": timestamp},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()
+    key = serialization.load_pem_private_key(private_key_pem, password=None)
+    signature = key.sign(canonical, padding.PKCS1v15(), hashes.SHA256())
+    return {
+        "X-Workload-Subject": subject,
+        "X-Workload-Timestamp": timestamp,
+        "X-Workload-Nonce": request_nonce,
+        "X-Workload-Signature": _encode(signature),
+    }
+
+
+def verify_issuer_request(public_key_pem: bytes, subject: str, timestamp: str, nonce: str, signature: str, payload: Mapping[str, Any], *, now: int | None = None, maximum_age_seconds: int = 10) -> None:
+    try:
+        issued_at = int(timestamp)
+    except ValueError as exc:
+        raise IdentityError("issuer request timestamp is invalid") from exc
+    current = int(time.time()) if now is None else now
+    if abs(current - issued_at) > maximum_age_seconds:
+        raise IdentityError("issuer request has expired")
+    canonical = json.dumps(
+        {"nonce": nonce, "payload": dict(payload), "subject": subject, "timestamp": timestamp},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()
+    try:
+        key = serialization.load_pem_public_key(public_key_pem)
+        key.verify(_decode(signature), canonical, padding.PKCS1v15(), hashes.SHA256())
+    except (ValueError, TypeError, InvalidSignature) as exc:
+        raise IdentityError("issuer request signature is invalid") from exc

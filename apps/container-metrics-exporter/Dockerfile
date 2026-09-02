@@ -3,4 +3,5 @@ WORKDIR /app
 COPY apps/container-metrics-exporter/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY apps/container-metrics-exporter/app.py .
+COPY apps/shared-identity/workload_identity.py apps/shared-identity/issuer_client.py ./
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "9101"]

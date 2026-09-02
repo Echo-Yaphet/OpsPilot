@@ -3,7 +3,7 @@ import shlex
 from typing import Protocol
 
 import httpx
-from workload_identity import mint_identity
+from issuer_client import request_identity
 
 from .tools import OpsTools
 
@@ -95,33 +95,29 @@ class GatewayExecutor:
     """Typed client for the separately deployed executor gateway."""
 
     def __init__(
-        self, base_url: str, identity_key: str, timeout: float = 15,
-        issuer: str = "opspilot-control-api", audience: str = "opspilot-executor-gateway",
-        subject: str = "control-api", ttl_seconds: int = 10, key_id: str = "control-api-v1",
+        self, base_url: str, issuer_url: str, private_key_file: str, timeout: float = 15,
+        audience: str = "opspilot-executor-gateway", subject: str = "control-api",
+        ttl_seconds: int = 10,
     ):
         self.base_url = base_url.rstrip("/")
-        self.identity_key = identity_key
+        self.issuer_url = issuer_url
+        self.private_key_file = private_key_file
         self.timeout = timeout
-        self.issuer = issuer
         self.audience = audience
         self.subject = subject
         self.ttl_seconds = ttl_seconds
-        self.key_id = key_id
 
     async def execute(self, action: ExecutionAction) -> str:
         payload = {"operation": action.operation, "target": action.target}
         path = "/v1/actions"
-        credential = mint_identity(
-            self.identity_key,
-            issuer=self.issuer,
+        credential = await request_identity(
+            self.issuer_url, self.private_key_file, self.subject,
             audience=self.audience,
-            subject=self.subject,
             ttl_seconds=self.ttl_seconds,
             method="POST",
             path=path,
             operation=action.operation,
             target=action.target,
-            key_id=self.key_id,
         )
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:

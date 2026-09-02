@@ -2,9 +2,22 @@ import asyncio
 import importlib.util
 import sys
 import types
+import tempfile
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from workload_identity import mint_external_identity
+
+
+ISSUER_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+ISSUER_PRIVATE = ISSUER_KEY.private_bytes(
+    serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
+)
+ISSUER_PUBLIC = ISSUER_KEY.public_key().public_bytes(
+    serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+)
 
 
 class FakeContainer:
@@ -55,7 +68,12 @@ class FakeContainerCollection:
 
 
 def load_proxy(monkeypatch, log_targets=None):
-    monkeypatch.setenv("DOCKER_PROXY_TOKEN", "test-proxy-token")
+    public_path = Path(tempfile.gettempdir()) / "opspilot-test-issuer-public.pem"
+    public_path.write_bytes(ISSUER_PUBLIC)
+    database_path = Path(tempfile.gettempdir()) / f"opspilot-proxy-{id(monkeypatch)}.db"
+    database_path.unlink(missing_ok=True)
+    monkeypatch.setenv("WORKLOAD_IDENTITY_PUBLIC_KEY_FILE", str(public_path))
+    monkeypatch.setenv("DOCKER_PROXY_IDENTITY_DATABASE_PATH", str(database_path))
     if log_targets is None:
         monkeypatch.delenv("DOCKER_PROXY_LOG_TARGETS", raising=False)
     else:
@@ -71,8 +89,14 @@ def load_proxy(monkeypatch, log_targets=None):
     return module, TestClient(module.app)
 
 
-def auth():
-    return {"Authorization": "Bearer test-proxy-token"}
+def auth(method="GET", path="/containers/json", operation="container_status", target="redis", subject="executor-gateway"):
+    token = mint_external_identity(
+        ISSUER_PRIVATE, key_id="opspilot-issuer-v1",
+        issuer="opspilot-workload-identity-issuer", audience="opspilot-docker-proxy",
+        subject=subject, ttl_seconds=10, method=method, path=path,
+        operation=operation, target=target,
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_proxy_requires_identity_and_exposes_no_raw_docker_api(monkeypatch):
@@ -87,10 +111,17 @@ def test_proxy_allows_only_fixed_operations_and_targets(monkeypatch):
     container = FakeContainer()
     monkeypatch.setattr(module, "container_for", lambda target: container)
 
-    status = client.get("/v1/containers/redis/status", headers=auth())
-    stats = client.get("/v1/containers/payment-service/stats", headers=auth())
-    restarted = client.post("/v1/containers/redis/restart", headers=auth())
-    stopped = client.post("/v1/containers/redis/stop", headers=auth())
+    status = client.get("/v1/containers/redis/status", headers=auth(path="/v1/containers/redis/status"))
+    stats = client.get("/v1/containers/payment-service/stats", headers=auth(
+        path="/v1/containers/payment-service/stats", operation="container_stats",
+        target="payment-service", subject="container-metrics-exporter",
+    ))
+    restarted = client.post("/v1/containers/redis/restart", headers=auth(
+        method="POST", path="/v1/containers/redis/restart", operation="restart_container",
+    ))
+    stopped = client.post("/v1/containers/redis/stop", headers=auth(
+        method="POST", path="/v1/containers/redis/stop", operation="stop_container",
+    ))
 
     assert status.json()["status"] == "running"
     assert stats.json() == {
@@ -103,10 +134,10 @@ def test_proxy_allows_only_fixed_operations_and_targets(monkeypatch):
     }
     assert restarted.status_code == 200 and container.restarted
     assert stopped.status_code == 200 and container.stopped
-    assert client.post("/v1/containers/prometheus/restart", headers=auth()).status_code == 403
-    assert client.post("/v1/containers/payment-service/stop", headers=auth()).status_code == 403
-    assert client.post("/v1/containers/unknown/restart", headers=auth()).status_code == 403
-    assert client.get("/v1/containers/redis/stats", headers=auth()).status_code == 403
+    assert client.post("/v1/containers/prometheus/restart", headers=auth(method="POST", path="/v1/containers/prometheus/restart", operation="restart_container", target="prometheus")).status_code == 403
+    assert client.post("/v1/containers/payment-service/stop", headers=auth(method="POST", path="/v1/containers/payment-service/stop", operation="stop_container", target="payment-service")).status_code == 403
+    assert client.post("/v1/containers/unknown/restart", headers=auth(method="POST", path="/v1/containers/unknown/restart", operation="restart_container", target="unknown")).status_code == 403
+    assert client.get("/v1/containers/redis/stats", headers=auth(path="/v1/containers/redis/stats", operation="container_stats", target="redis", subject="container-metrics-exporter")).status_code == 403
 
 
 def test_proxy_discovers_only_allowlisted_project_log_targets(monkeypatch):

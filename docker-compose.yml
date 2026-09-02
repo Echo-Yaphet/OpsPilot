@@ -10,6 +10,41 @@ x-service-common: &service-common
       max-file: "3"
 
 services:
+  workload-identity-bootstrap:
+    build:
+      context: .
+      dockerfile: apps/workload-identity-issuer/Dockerfile
+    command: ["python", "/app/bootstrap.py"]
+    restart: "no"
+    volumes:
+      - workload-issuer-private:/identity/issuer-private
+      - workload-issuer-public:/identity/issuer-public
+      - workload-control-private:/identity/control-private
+      - workload-control-public:/identity/control-public
+      - workload-gateway-private:/identity/gateway-private
+      - workload-gateway-public:/identity/gateway-public
+      - workload-metrics-private:/identity/metrics-private
+      - workload-metrics-public:/identity/metrics-public
+
+  workload-identity-issuer:
+    <<: *service-common
+    build:
+      context: .
+      dockerfile: apps/workload-identity-issuer/Dockerfile
+    environment:
+      WORKLOAD_IDENTITY_SIGNING_KEY_FILE: /identity/issuer-private/private.pem
+      WORKLOAD_IDENTITY_DATABASE_PATH: /data/issuer.db
+      WORKLOAD_IDENTITY_CLIENT_KEYS: '{"control-api":"/identity/control-public/public.pem","executor-gateway":"/identity/gateway-public/public.pem","container-metrics-exporter":"/identity/metrics-public/public.pem"}'
+    volumes:
+      - workload-issuer-private:/identity/issuer-private:ro
+      - workload-control-public:/identity/control-public:ro
+      - workload-gateway-public:/identity/gateway-public:ro
+      - workload-metrics-public:/identity/metrics-public:ro
+      - workload-issuer-data:/data
+    networks: [opspilot, executor-runtime]
+    depends_on:
+      workload-identity-bootstrap: {condition: service_completed_successfully}
+
   dashboard:
     <<: *service-common
     build:
@@ -120,8 +155,8 @@ services:
       LOKI_URL: http://loki:3100
       DATABASE_PATH: /data/opspilot.db
       EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
-      EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
-      EXECUTOR_IDENTITY_KEY_ID: ${EXECUTOR_IDENTITY_KEY_ID:-control-api-v1}
+      WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
+      WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/control-private/private.pem
       EXECUTOR_IDENTITY_TTL_SECONDS: ${EXECUTOR_IDENTITY_TTL_SECONDS:-10}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
@@ -152,7 +187,8 @@ services:
     volumes:
       - control-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
-    depends_on: [prometheus, loki, alertmanager, executor-gateway]
+      - workload-control-private:/identity/control-private:ro
+    depends_on: [prometheus, loki, alertmanager, executor-gateway, workload-identity-issuer]
 
   policy-distributor:
     <<: *service-common
@@ -177,8 +213,8 @@ services:
       LOKI_URL: http://loki:3100
       DATABASE_PATH: /data/opspilot.db
       EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
-      EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
-      EXECUTOR_IDENTITY_KEY_ID: ${EXECUTOR_IDENTITY_KEY_ID:-control-api-v1}
+      WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
+      WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/control-private/private.pem
       EXECUTOR_IDENTITY_TTL_SECONDS: ${EXECUTOR_IDENTITY_TTL_SECONDS:-10}
       VERIFICATION_MAX_ATTEMPTS: ${VERIFICATION_MAX_ATTEMPTS:-6}
       VERIFICATION_CHECK_INTERVAL_SECONDS: ${VERIFICATION_CHECK_INTERVAL_SECONDS:-2}
@@ -203,6 +239,7 @@ services:
     volumes:
       - control-canary-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
+      - workload-control-private:/identity/control-private:ro
     depends_on: [prometheus, loki, alertmanager, executor-gateway, policy-distributor]
 
   executor-gateway:
@@ -212,19 +249,17 @@ services:
       dockerfile: apps/executor-gateway/Dockerfile
     environment:
       DOCKER_PROXY_URL: http://docker-proxy:2375
-      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
-      EXECUTOR_IDENTITY_KEY: ${EXECUTOR_IDENTITY_KEY:-opspilot-local-workload-signing-key}
-      EXECUTOR_IDENTITY_KEY_ID: ${EXECUTOR_IDENTITY_KEY_ID:-control-api-v1}
-      EXECUTOR_IDENTITY_PREVIOUS_KEY_ID: ${EXECUTOR_IDENTITY_PREVIOUS_KEY_ID:-}
-      EXECUTOR_IDENTITY_PREVIOUS_KEY: ${EXECUTOR_IDENTITY_PREVIOUS_KEY:-}
-      EXECUTOR_IDENTITY_PREVIOUS_KEY_VALID_UNTIL: ${EXECUTOR_IDENTITY_PREVIOUS_KEY_VALID_UNTIL:-}
-      EXECUTOR_IDENTITY_MAX_ROTATION_OVERLAP_SECONDS: ${EXECUTOR_IDENTITY_MAX_ROTATION_OVERLAP_SECONDS:-3600}
+      WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
+      WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/gateway-private/private.pem
+      WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
       EXECUTOR_IDENTITY_MAX_TTL_SECONDS: ${EXECUTOR_IDENTITY_MAX_TTL_SECONDS:-15}
       EXECUTOR_DATABASE_PATH: /data/executor.db
     volumes:
       - executor-data:/data
+      - workload-gateway-private:/identity/gateway-private:ro
+      - workload-issuer-public:/identity/issuer-public:ro
     networks: [opspilot, executor-runtime]
-    depends_on: [docker-proxy]
+    depends_on: [docker-proxy, workload-identity-issuer]
 
   docker-proxy:
     restart: unless-stopped
@@ -233,10 +268,13 @@ services:
       dockerfile: apps/docker-proxy/Dockerfile
     environment:
       DOCKER_HOST: unix:///var/run/docker.sock
-      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
+      WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
+      DOCKER_PROXY_IDENTITY_DATABASE_PATH: /data/proxy-identity.db
       DOCKER_PROXY_PROJECT: ${COMPOSE_PROJECT_NAME:-opspilot}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - workload-issuer-public:/identity/issuer-public:ro
+      - docker-proxy-data:/data
     networks: [executor-runtime]
 
   container-metrics-exporter:
@@ -246,11 +284,14 @@ services:
       dockerfile: apps/container-metrics-exporter/Dockerfile
     environment:
       DOCKER_PROXY_URL: http://docker-proxy:2375
-      DOCKER_PROXY_TOKEN: ${DOCKER_PROXY_TOKEN:-opspilot-local-docker-proxy-token}
+      WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
+      WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/metrics-private/private.pem
       CONTAINER_METRICS_TARGETS: user-service,order-service,payment-service
       CONTAINER_CPU_THRESHOLDS: '${CONTAINER_CPU_THRESHOLDS:-{"user-service":0.8,"order-service":0.8,"payment-service":0.8}}'
     networks: [opspilot, executor-runtime]
-    depends_on: [docker-proxy]
+    volumes:
+      - workload-metrics-private:/identity/metrics-private:ro
+    depends_on: [docker-proxy, workload-identity-issuer]
 
   mysql:
     <<: *service-common
@@ -345,3 +386,13 @@ volumes:
   control-data: {}
   control-canary-data: {}
   executor-data: {}
+  docker-proxy-data: {}
+  workload-issuer-data: {}
+  workload-issuer-private: {}
+  workload-issuer-public: {}
+  workload-control-private: {}
+  workload-control-public: {}
+  workload-gateway-private: {}
+  workload-gateway-public: {}
+  workload-metrics-private: {}
+  workload-metrics-public: {}

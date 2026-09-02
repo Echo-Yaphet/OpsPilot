@@ -1,14 +1,15 @@
 import asyncio
-import hmac
 import json
 import logging
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import docker
-from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from workload_identity import IdentityError, verify_external_identity
 
 
 STATUS_TARGETS = frozenset({
@@ -19,7 +20,12 @@ RESTART_TARGETS = frozenset({"redis", "mysql", "user-service", "order-service", 
 STOP_TARGETS = frozenset({"redis", "mysql"})
 STATS_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
 SUPPORTED_LOG_TARGETS = frozenset({"user-service", "order-service", "payment-service"})
-PROXY_TOKEN = os.getenv("DOCKER_PROXY_TOKEN", "")
+IDENTITY_ISSUER = os.getenv("WORKLOAD_IDENTITY_ISSUER", "opspilot-workload-identity-issuer")
+IDENTITY_KEY_ID = os.getenv("WORKLOAD_IDENTITY_KEY_ID", "opspilot-issuer-v1")
+IDENTITY_PUBLIC_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PUBLIC_KEY_FILE", "/identity/issuer-public/public.pem")
+IDENTITY_AUDIENCE = os.getenv("DOCKER_PROXY_IDENTITY_AUDIENCE", "opspilot-docker-proxy")
+IDENTITY_MAX_TTL_SECONDS = int(os.getenv("DOCKER_PROXY_IDENTITY_MAX_TTL_SECONDS", "15"))
+IDENTITY_DATABASE_PATH = os.getenv("DOCKER_PROXY_IDENTITY_DATABASE_PATH", "/data/proxy-identity.db")
 DOCKER_HOST = os.getenv("DOCKER_HOST", "unix:///var/run/docker.sock")
 DOCKER_PROJECT = os.getenv("DOCKER_PROXY_PROJECT", "opspilot")
 LOG_DISCOVERY_FILE = os.getenv("DOCKER_PROXY_LOG_DISCOVERY_FILE", "")
@@ -82,10 +88,49 @@ def prometheus_label(value: str) -> str:
 LOG_TARGET_INFO = load_log_target_info(LOG_DISCOVERY_FILE)
 
 
-def authorize(authorization: str | None = Header(None)) -> None:
-    expected = f"Bearer {PROXY_TOKEN}"
-    if not PROXY_TOKEN or not authorization or not hmac.compare_digest(authorization, expected):
+def initialize_identity_database() -> None:
+    Path(IDENTITY_DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(IDENTITY_DATABASE_PATH) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS consumed_credentials (
+            credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
+            expires_at INTEGER NOT NULL, consumed_at INTEGER NOT NULL
+        )""")
+
+
+def consume_identity(identity: dict) -> None:
+    now = int(time.time())
+    try:
+        with sqlite3.connect(IDENTITY_DATABASE_PATH) as db:
+            db.execute("DELETE FROM consumed_credentials WHERE expires_at < ?", (now - 60,))
+            db.execute(
+                "INSERT INTO consumed_credentials VALUES(?,?,?,?)",
+                (identity["jti"], identity["sub"], identity["exp"], now),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise IdentityError("credential has already been used") from exc
+
+
+def authorize(request: Request, authorization: str | None = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="invalid restricted Docker proxy identity")
+    target = request.path_params.get("target", "")
+    suffix = request.url.path.rsplit("/", 1)[-1]
+    operation = {"status": "container_status", "stats": "container_stats", "restart": "restart_container", "stop": "stop_container"}.get(suffix)
+    try:
+        identity = verify_external_identity(
+            authorization.removeprefix("Bearer "), Path(IDENTITY_PUBLIC_KEY_FILE).read_bytes(),
+            key_id=IDENTITY_KEY_ID, issuer=IDENTITY_ISSUER, audience=IDENTITY_AUDIENCE,
+            method=request.method, path=request.url.path, maximum_ttl_seconds=IDENTITY_MAX_TTL_SECONDS,
+        )
+        if identity["operation"] != operation or identity["target"] != target:
+            raise IdentityError("credential action claims do not match request")
+        expected_subject = "container-metrics-exporter" if operation == "container_stats" else "executor-gateway"
+        if identity["sub"] != expected_subject:
+            raise IdentityError("credential workload subject is not authorized")
+        consume_identity(identity)
+        return identity
+    except (OSError, IdentityError) as exc:
+        raise HTTPException(status_code=401, detail=f"invalid restricted Docker proxy identity: {exc}") from exc
 
 
 def container_for(target: str):
@@ -188,6 +233,7 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="OpsPilot Restricted Docker Proxy", version="0.1.0", lifespan=lifespan)
+initialize_identity_database()
 
 
 @app.get("/health")

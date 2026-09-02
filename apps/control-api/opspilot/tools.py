@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from workload_identity import mint_identity
+from issuer_client import request_identity
 
 from .config import Settings
 
@@ -70,17 +70,16 @@ class LiveOpsTools(OpsTools):
     async def _gateway(self, method: str, path: str, json: dict | None = None) -> dict:
         operation = json["operation"] if json else "container_status"
         target = json["target"] if json else path.removeprefix("/v1/containers/").removesuffix("/status")
-        credential = mint_identity(
-            self.settings.executor_identity_key,
-            issuer=self.settings.executor_identity_issuer,
+        credential = await request_identity(
+            self.settings.workload_identity_issuer_url,
+            self.settings.workload_identity_private_key_file,
+            self.settings.executor_identity_subject,
             audience=self.settings.executor_identity_audience,
-            subject=self.settings.executor_identity_subject,
             ttl_seconds=self.settings.executor_identity_ttl_seconds,
             method=method,
             path=path,
             operation=operation,
             target=target,
-            key_id=self.settings.executor_identity_key_id,
         )
         headers = {"Authorization": f"Bearer {credential}"}
         async with httpx.AsyncClient(timeout=self.settings.executor_gateway_timeout) as client:

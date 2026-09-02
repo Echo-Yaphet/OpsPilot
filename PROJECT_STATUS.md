@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-02 (Vault Agent runtime-log Secret delivery milestone)
+Last updated: 2026-09-02 (externally issued workload identity milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. Runtime-log identity is now delivered from a concrete Vault KV v2/Vault Agent controller into the provider-neutral bundle seam. Vault revision rollback/conflict checks, atomic rendering, immutable snapshots, strict certificate/key/identity validation, CRL enforcement, least-privilege projections, and overlap-gated rotation remain layered independently. TCP 1514 hot-swaps its listener and reauthenticates active clients without restarting Promtail; the three services then roll independently while retaining strict hostname verification, loopback-only plaintext, Loki labels, and freshness.
+4. Control API, Gateway, and the metrics exporter now authenticate to an independent asymmetric workload-identity issuer with per-workload proof keys. The issuer alone owns the RS256 signing key; every downstream credential remains short-lived, request/action/target bound, and replay-protected in persistent stores. Gateway-to-Proxy and exporter-to-Proxy static tokens are removed while policy, approval, allowlists, and the sole-Proxy socket boundary remain independent.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -31,7 +31,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 
 ### Runtime and observability
 
-- Docker Compose monorepo with 15 services, including Alertmanager, a separate executor gateway, an internal restricted Docker proxy, and a socketless container metrics exporter.
+- Docker Compose monorepo with 16 running services, including an external workload-identity issuer, Alertmanager, a separate executor gateway, an internal restricted Docker proxy, and a socketless container metrics exporter.
 - Three FastAPI sample applications: `user-service`, `order-service`, and `payment-service`.
 - MySQL 8.4 and Redis 7.4 dependencies.
 - Prometheus scraping all three applications every five seconds.
@@ -85,14 +85,12 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - The proxy has no host port, is not attached to the Control API network, independently enforces operation-specific target allowlists, and exposes no raw Docker API routes. Its read-only stats route is limited to the three business services and returns only CPU counters needed by the exporter.
 - Gateway allow, deny, and failure outcomes are persisted independently in its `execution_audit` SQLite table and volume.
 - Gateway failures and timeouts produce `execution_failed` incidents and do not enter recovery verification.
-- Control API no longer transmits a reusable static Gateway token. It mints a new HMAC-signed workload credential for every Gateway request.
-- Workload credentials have a bounded lifetime and carry issuer, audience, subject, issued/expiry times, unique `jti`, HTTP method/path, operation, and target claims.
-- Gateway rejects expired, wrong-audience, request/action-mismatched, and replayed credentials before Docker access.
-- Consumed credential IDs are persisted atomically in the independent Gateway SQLite store; action audits include workload subject and credential ID.
-- Every newly minted workload credential carries an explicit configurable key ID; the Gateway selects exactly that verification key and rejects unknown IDs before Docker access.
-- The Gateway supports one current and one previous verification key only, with an absolute finite overlap deadline and a bounded overlap limit (one hour by default, at most one day). Incomplete, duplicate, malformed, expired, or overlong rotation configuration is rejected at startup.
-- A Gateway-first then Control-API rotation preserves in-flight availability: the old signer remains valid only inside the configured overlap, while the new signer switches without weakening credential expiry, request/action/target binding, or persistent `jti` replay prevention.
-- Gateway execution audits now retain the workload key ID alongside subject and credential ID. Existing `EXECUTOR_IDENTITY_KEY` configuration remains compatible through the default `control-api-v1` key ID.
+- An independent issuer authenticates Control API, Gateway, and metrics exporter with separate asymmetric proof keys, persistent one-use request nonces, and subject-specific audience/operation policy. Only the issuer holds the RS256 signing private key.
+- Control→Gateway, Gateway→Proxy, and exporter→Proxy credentials have a bounded lifetime and carry issuer, audience, subject, issued/expiry times, unique `jti`, HTTP method/path, operation, and target claims.
+- Gateway and Proxy independently reject expired, wrong-audience, wrong-subject, request/action-mismatched, and replayed credentials before Docker access.
+- Consumed credential IDs are persisted atomically in independent Gateway and Proxy SQLite stores; Gateway action audits include workload subject, credential ID, and external issuer key ID.
+- Gateway-to-Proxy and exporter-to-Proxy shared Bearer tokens have been removed. Callers hold only their own proof private key and verifiers hold only issuer public trust.
+- Gateway execution audits retain the external issuer key ID alongside subject and credential ID; no Control API HMAC signing key or Gateway-to-Proxy shared token is configured.
 - A replaceable `KnowledgeRetriever` seam supplies deterministic SQLite-backed runbook and historical-incident retrieval without changing `IncidentState` or public HTTP responses.
 - SQLite is migrated in place with a `runbooks` table and three idempotently seeded runbooks for Redis, MySQL, and inconclusive service degradation.
 - RCA retrieves exact-root-cause runbooks plus compact same-service/same-root-cause incident summaries and records both as `runbook` and `incident_history` evidence.
@@ -130,6 +128,14 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the externally issued workload identity milestone:
+
+- The current-source suite passed 105 backend tests with the existing single LangGraph deprecation warning after all affected images were rebuilt. Compose validation, the rebuilt/deployed 16-service stack, and final smoke passed.
+- A one-shot bootstrap generated separate persistent RSA key pairs for the issuer, Control API, Gateway, and metrics exporter. Only the issuer received the JWT signing private key; callers received only their own proof private key, while Gateway and Proxy received only issuer public trust.
+- Live issuance and execution proved Control→Gateway, Gateway→Proxy, and exporter→Proxy short-lived RS256 credentials with issuer/audience/subject/method/path/operation/target binding. Issuer nonce, Gateway `jti`, and Proxy `jti` consumption are stored independently and atomically.
+- Proxy returned 401 without identity, 403 for an externally authenticated unknown target, and 401 on credential replay. Live inspection confirmed only Proxy mounted the Docker socket and Control API remained outside `executor-runtime`.
+- A real Redis outage on the final least-privilege key-volume deployment produced recommendation-only incident `5a850227-113f-4f44-8fdf-e203126ea1bb`, approval-blocked incident `a7af43e8-a6f1-4979-be55-844b1d4f97be`, and externally issued Gateway/Proxy recovery incident `f4be3ccf-242c-4b2d-b1b2-0339703312aa`, `resolved`, `verified=true`.
 
 Latest verification for the Vault Agent runtime-log Secret delivery milestone:
 
@@ -480,7 +486,7 @@ Local entry points:
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation now uses real Docker counters with strict per-service thresholds and health/staleness alerts, but the local exporter still polls on scrape, covers only the three business services, uses the local shared proxy token, and requires recreation to change targets or thresholds. Last-success timestamps are process-local and reset when the exporter restarts.
 - Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack no longer configures Proxy file discovery, shared target files, or persisted positions. Vault Agent is now the first concrete external delivery controller, while the strict downstream contract remains provider-neutral for a future cloud Secret CSI adapter. Vault Agent must run on the Docker host because its successful-render hook invokes the host Docker CLI; production still needs normal host service hardening and a non-dev Vault cluster. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
-- The local HMAC workload identity now supports explicit key IDs and bounded current/previous key rotation, but key material and the Gateway-to-proxy token still come from local environment configuration. The proxy narrows the reachable Docker API surface but still ultimately owns a privileged Docker socket; production needs externally issued workload identity and an OS/runtime-enforced least-privilege executor rather than relying only on application route controls.
+- Workload identity is externally issued and static Proxy tokens are removed, but the Proxy still ultimately owns a privileged Docker socket. Production should replace this application-level route boundary with an OS/runtime-enforced least-privilege executor.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
@@ -650,19 +656,26 @@ Local entry points:
 - Added monotonic Vault revision and same-revision conflict protection, exact rendered-key validation, immutable snapshots, private-key permissions, serialized apply, and success-only accepted-state advancement before reusing the strict installer and three-stage rotation.
 - Verified a real Vault 1.20.3/AppRole/one-use Secret ID render and end-to-end controller rotation while preserving Promtail identity, runtime-log mTLS denials/delivery, service health, labels, freshness, and smoke.
 
+### Completed: externally issued workload identity
+
+- Replaced Control API local HMAC minting with a separate RS256 issuer authenticated by per-workload asymmetric proof keys; the issuer alone holds the signing private key.
+- Removed the Gateway-to-Proxy shared token and migrated both Gateway execution/status calls and metrics exporter stats calls to independently issued credentials.
+- Retained the 10-second lifetime, issuer/audience/subject/method/path/operation/target binding, persistent Gateway replay prevention, and added independent issuer-nonce plus Proxy-credential replay stores.
+- Kept public HTTP contracts, `IncidentState`, `IncidentWorkflow.run(request)`, `OpsTools`, Dashboard evidence, recommendation-only behavior, independent policy/approval gates, route/target allowlists, and sole-Proxy socket ownership unchanged.
+- Revalidated external issuance, invalid identity/target/replay denials, live metrics collection, socket/network isolation, smoke, and the real Redis recommendation → approval block → approved verified recovery path.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
-- Replace local HMAC key material with externally issued workload identity when moving beyond the local stack.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
 - If another target platform requires it, add a cloud Secret CSI adapter behind the same strict bundle seam; Vault Agent is now the validated concrete controller.
-- Replace local HMAC workload identity and the Gateway-to-Proxy shared token with externally issued workload identity while retaining request/action/target binding, replay protection, approval independence, and the sole-Proxy socket boundary.
+- Replace the privileged Docker socket Proxy with an OS/runtime-enforced least-privilege executor while retaining the typed action API, independent policy/approval gates, external workload identity, audit persistence, and recommendation-only defaults.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `git status --short --branch`, `docker compose ps`, `docker compose config --quiet`, and `make smoke`. The default stack has 15 services; the persistent primary Verification-policy history has accepted signed revision 104. Runtime-log certificates now arrive from a concrete Vault KV v2/Vault Agent controller through the provider-neutral versioned bundle seam. The Agent uses minimal AppRole read access and one atomic render; the host controller rejects Vault revision rollback/conflict, preserves immutable snapshots, advances state only on success, and reuses strict identity/key/CRL validation plus the real gateway-trust -> rolling-clients -> gateway-identity rotation without restarting Promtail. Plaintext remains loopback-only; Loki labels/freshness, CPU/Redis loops, Alertmanager recommendation-only behavior, independent policy/approval gates, and Gateway/Proxy isolation remain verified. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard formats, revision >104 rule, and protected IDE/system files. Next replace local HMAC workload identity and the Gateway-to-Proxy shared token with externally issued workload identity while retaining replay protection, request/action/target binding, approval independence, and sole-Proxy socket ownership; rerun full tests, deployment, live acceptance, docs, functional-only staging, commit, and push.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `git status --short --branch`, `docker compose ps`, `docker compose config --quiet`, and `make smoke`. The default stack has 16 running services; the persistent primary Verification-policy history has accepted signed revision 104. Control API, Gateway, and metrics exporter now obtain short-lived RS256 credentials from an independent issuer using separate asymmetric workload proof keys; the issuer alone owns the signing private key, Gateway/Proxy persist `jti` consumption, issuer nonce replay is persisted, and no Gateway-to-Proxy shared token remains. Runtime-log Vault Agent delivery, strict mTLS rotation without Promtail restart, Loki labels/freshness, CPU/Redis loops, Alertmanager recommendation-only behavior, independent policy/approval gates, and sole-Proxy socket ownership remain verified. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard formats, revision >104 rule, and protected IDE/system files. Next replace the privileged Docker socket Proxy with an OS/runtime-enforced least-privilege executor while retaining the typed action API, external identity, replay/audit guarantees, approval independence, and recommendation-only defaults; rerun full tests, deployment, live acceptance, docs, functional-only staging, commit, and push.

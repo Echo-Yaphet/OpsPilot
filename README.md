@@ -109,27 +109,13 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> 整个默认栈只有 `docker-proxy` 挂载 Docker socket。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 和日志发现 API 均不可访问。新的容器指标 exporter 无 socket，只能使用本地代理身份读取三个业务容器裁剪后的 CPU 计数器。Gateway 本身也无 socket 和 Docker SDK，并继续只接受 `restart_container` 与故障演练所需的 `stop_container` 类型化操作。Control API 为每次调用签发最长 10 秒的 HMAC workload credential，绑定显式 key ID、issuer、audience、subject、方法、路径、操作和目标；Gateway 使用持久化 `jti` 防重放。user/order/payment 都通过 Docker 的 mTLS RFC5424 syslog driver 转发到 TCP 1514。Promtail 镜像内的 TLS 网关要求受信客户端证书和允许的服务 CN，验证后只转发到容器回环 `127.0.0.1:1515`；Promtail 进程与网关加载密钥后均以 `nobody` 运行。Promtail 只挂载服务端证书、服务端私钥、CA 公证书及自身配置，不会看到 CA 私钥或客户端私钥，也不挂载宿主容器日志目录、文件 target、positions 卷或 Docker socket。runtime pipeline counter 保留三个服务的 `compose_service`、`container` 标签和按服务 freshness。
+> 整个默认栈只有 `docker-proxy` 挂载 Docker socket。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 不可访问。Control API、Gateway 和指标 exporter 分别持有自己的非对称 workload proof key，向独立签发器领取最长 10 秒的 RS256 credential；签发私钥只存在于签发器卷中。Control→Gateway 与 Gateway/exporter→Proxy 的每个凭证都绑定 issuer、audience、subject、方法、路径、operation、target 和唯一 `jti`，Gateway 与 Proxy 分别持久化消费记录。Gateway 本身无 socket 和 Docker SDK，策略白名单与人工审批仍独立。user/order/payment 继续通过 mTLS RFC5424 syslog driver 转发，Promtail 不接触 CA 或客户端私钥。
 
-## Gateway workload identity 密钥轮换
+## 外部 workload identity
 
-未配置新变量时仍使用原有 `EXECUTOR_IDENTITY_KEY` 和默认 key ID `control-api-v1`。轮换时，Gateway 只按凭证 header 中的明确 `kid` 选择验证 key，不会用多把 key 逐一试签。当前签名/验证 key 使用：
+首次启动时，一次性 bootstrap job 在四个独立命名卷中生成签发器、Control API、Gateway 和 metrics exporter 的 RSA key pair。每个调用方只挂载自己的 proof private key；Gateway 与 Proxy 只挂载签发器 public key；只有签发器挂载 JWT signing private key。签发器验证调用方对完整领取请求的签名、时间戳和一次性 nonce，并按 subject 独立限制 audience 与 operation，随后签发请求绑定的短期 RS256 credential。
 
-```bash
-EXECUTOR_IDENTITY_KEY_ID=control-api-v2
-EXECUTOR_IDENTITY_KEY=replace-with-new-secret
-```
-
-Gateway 可在一个明确截止的短窗口内同时接受上一把验证 key：
-
-```bash
-EXECUTOR_IDENTITY_PREVIOUS_KEY_ID=control-api-v1
-EXECUTOR_IDENTITY_PREVIOUS_KEY=replace-with-old-secret
-EXECUTOR_IDENTITY_PREVIOUS_KEY_VALID_UNTIL=1788175045 # Unix timestamp
-EXECUTOR_IDENTITY_MAX_ROTATION_OVERLAP_SECONDS=3600
-```
-
-安全切换顺序是：先部署“新 key 为当前、旧 key 为上一把且带未来截止时间”的 Gateway；确认旧 Control API 仍可访问后，再把 Control API 切到新 key；窗口结束后从 Gateway 删除全部 `PREVIOUS` 配置。上一把 key 的 ID、secret、截止时间必须同时配置；重复 ID、重复 secret、非法/已过去的截止时间，或截止时间超过重叠上限都会让 Gateway 拒绝启动。重叠上限默认 3600 秒且只能配置为 1–86400 秒。未知 `kid` 与窗口结束后的旧 key 会在 Docker 访问前返回 401。凭证原有的短期 expiry、audience、请求/action/target 绑定和持久化 `jti` 防重放保持不变。
+签发器无宿主端口且不挂载 Docker socket。Gateway 调 Proxy 与 metrics exporter 读取 stats 均不再发送静态 shared token。签发器、Gateway 和 Proxy 的 nonce/`jti` 消费状态各自持久化；未知 workload/audience/operation、过期 proof、重复 nonce、错误签名、错误 issuer/audience/path/action/target 和重复 `jti` 都会在 Docker 访问前拒绝。生产轮换应先让验证方信任新的签发 public key，再切换签发器 signing key，最后在所有旧凭证最长 TTL 结束后移除旧信任；调用方 proof key 可按 workload 独立轮换。
 
 ## 其他故障场景
 

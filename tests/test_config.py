@@ -46,10 +46,10 @@ def test_invalid_verification_policy_is_rejected(overrides):
         Settings(verification_service_policies=overrides)
 
 
-@pytest.mark.parametrize("key_id", ["", "has space", "x" * 65])
-def test_invalid_executor_identity_key_id_is_rejected(key_id):
+@pytest.mark.parametrize("url", ["", "issuer:8085", "ftp://issuer"])
+def test_invalid_workload_identity_issuer_url_is_rejected(url):
     with pytest.raises(ValidationError):
-        Settings(executor_identity_key_id=key_id)
+        Settings(workload_identity_issuer_url=url)
 
 
 @pytest.mark.parametrize("kwargs", [
