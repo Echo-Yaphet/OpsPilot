@@ -1,0 +1,40 @@
+# Run Vault Agent on the Docker host so the command hook can invoke the
+# socketless OpsPilot rotation path through the host's Docker CLI.
+pid_file = "/run/opspilot-vault-agent.pid"
+
+vault {
+  address = "https://vault.example.internal:8200"
+  ca_cert = "/etc/opspilot/vault/ca.pem"
+}
+
+auto_auth {
+  method "approle" {
+    mount_path = "auth/approle"
+    config = {
+      role_id_file_path                   = "/etc/opspilot/vault/role-id"
+      secret_id_file_path                 = "/etc/opspilot/vault/secret-id"
+      remove_secret_id_file_after_reading = true
+    }
+  }
+
+  sink "file" {
+    config = {
+      path = "/run/opspilot-vault-agent-token"
+      mode = 0600
+    }
+  }
+}
+
+template_config {
+  exit_on_retry_failure = true
+  static_secret_render_interval = "1m"
+}
+
+template {
+  source      = "/Users/yaphet/code/OpsPilot/infra/vault-agent/runtime-log-bundle.ctmpl"
+  destination = "/Users/yaphet/code/OpsPilot/work/runtime-log-vault-agent/rendered-bundle.json"
+  perms       = 0600
+  error_on_missing_key = true
+  command = ["/Users/yaphet/code/OpsPilot/scripts/apply-runtime-log-vault-agent-secret.sh"]
+  command_timeout = "10m"
+}

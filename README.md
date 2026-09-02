@@ -38,6 +38,34 @@ make runtime-log-rotate
 
 轮换器会先证明现有三个客户端仍被新信任 bundle 接受、当前服务器仍被新 trust bundle 接受，拒绝没有安全重叠的切换。跨 CA 切换严格分三阶段：先只扩展网关 trust/CRL 并第一次 HUP；再按 user/order/payment 顺序滚动客户端到新身份与新 trust；最后才投影新服务器身份并第二次 HUP。每次 HUP 都先以新 TLS context 在 1514 上建立替代监听，再关闭旧监听并让现有连接重新认证，不重启 Promtail。每项客户端重建都等待健康，最后重新验证无客户端证书拒绝、错误主机名拒绝、合法 mTLS 与 Loki 投递，并确认 Promtail 容器 ID 未改变。Docker Desktop 的 daemon-side syslog 驱动通过一次只读目录同步规避原子 inode 更新的可见性窗口；Linux daemon 上该步骤无副作用。
 
+#### Vault Agent 交付控制器
+
+仓库提供了可直接部署的 HashiCorp Vault Agent 接入，且不改变上述 provider-neutral 目录合约。`infra/vault-agent/runtime-log-policy.hcl` 只授予 `secret/data/opspilot/runtime-log` 读取权限；`runtime-log-agent.hcl.example` 使用 AppRole、一次性 Secret ID、`0600` token sink 和模板变更 command hook。Vault Agent 应运行在 Docker host 上，由 host Docker CLI 执行原有受限轮换脚本；它本身和任何新容器都不挂载 Docker socket。
+
+先以具备写权限的受信发布身份，把一个已验证的完整源目录写成单一 KV v2 revision：
+
+```bash
+RUNTIME_LOG_SECRET_SOURCE_DIR=/secure/staging/runtime-log-v2 \
+RUNTIME_LOG_VAULT_KV_MOUNT=secret \
+RUNTIME_LOG_VAULT_KV_PATH=opspilot/runtime-log \
+make runtime-log-vault-publish
+```
+
+KV data 的 key 与 bundle 文件名完全一致：`bundle.json`、`ca.pem`、server certificate/key、三组 service certificate/key，以及可选 `crl.pem`。发布脚本先调用同一严格校验器，之后用一次 `vault kv put` 原子创建新 revision；CA 私钥和未知字段不会发布。为 Agent 安装最小 policy/AppRole 后，复制 `infra/vault-agent/runtime-log-agent.hcl.example`，替换 Vault 地址、CA 和宿主路径，再以宿主服务管理器运行 `vault agent -config=<配置文件>`。
+
+```bash
+vault policy write opspilot-runtime-log infra/vault-agent/runtime-log-policy.hcl
+vault write auth/approle/role/opspilot-runtime-log \
+  token_policies=opspilot-runtime-log token_ttl=10m token_max_ttl=30m \
+  secret_id_ttl=10m secret_id_num_uses=1
+vault read -field=role_id auth/approle/role/opspilot-runtime-log/role-id
+vault write -field=secret_id -f auth/approle/role/opspilot-runtime-log/secret-id
+```
+
+最后两个值分别写入配置所引用的 `role-id`/`secret-id` 文件并设为 `0600`；Agent 成功读取后会删除 Secret ID 文件。若更改默认 KV mount/path，必须同步修改 publisher 变量、只读 policy 和模板中的 `secret` 路径。
+
+Agent 将单个 KV revision 原子渲染到被 Git 忽略的 `work/runtime-log-vault-agent/rendered-bundle.json`。command hook 调用与 `make runtime-log-vault-apply` 相同的受控入口：控制器要求正整数 `.Data.metadata.version`，拒绝旧 revision、同 revision 内容冲突、缺失/额外 key 和非完整渲染；随后建立不可变本地快照并再次执行证书、身份、CRL 和 key-pair 校验。首次启动只建立最小运行投影；已有投影时复用 `gateway trust → rolling clients → gateway identity` 热轮换。只有整个操作成功才原子推进 `accepted.json`，失败时保留上一已接受 revision 和全部不可变快照，便于在安全重叠材料下重试；删除该状态以允许 Vault 版本回退属于显式 break-glass 操作。
+
 入口：
 
 - Control API / OpenAPI：<http://localhost:8080/docs>

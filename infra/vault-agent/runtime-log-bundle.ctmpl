@@ -1,0 +1,3 @@
+{{- with secret "secret/data/opspilot/runtime-log" -}}
+{"vault_kv_version":{{ .Data.metadata.version }},"data":{{ .Data.data | toJSON }}}
+{{- end -}}

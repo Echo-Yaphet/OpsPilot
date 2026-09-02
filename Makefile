@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke runtime-log-pki runtime-log-rotate dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
+.PHONY: up down ps logs test smoke runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -8,6 +8,12 @@ runtime-log-pki:
 
 runtime-log-rotate:
 	./scripts/rotate-runtime-log-certificates.sh
+
+runtime-log-vault-publish:
+	./scripts/publish-runtime-log-bundle-to-vault.sh
+
+runtime-log-vault-apply:
+	./scripts/apply-runtime-log-vault-agent-secret.sh
 
 down:
 	docker compose down
