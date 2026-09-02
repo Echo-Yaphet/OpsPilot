@@ -35,6 +35,7 @@ services:
       WORKLOAD_IDENTITY_SIGNING_KEY_FILE: /identity/issuer-private/private.pem
       WORKLOAD_IDENTITY_DATABASE_PATH: /data/issuer.db
       WORKLOAD_IDENTITY_CLIENT_KEYS: '{"control-api":"/identity/control-public/public.pem","executor-gateway":"/identity/gateway-public/public.pem","container-metrics-exporter":"/identity/metrics-public/public.pem"}'
+      WORKLOAD_IDENTITY_TARGET_PLACEMENTS: '{"redis":"local-compose","mysql":"local-compose","user-service":"local-compose","order-service":"local-compose","payment-service":"local-compose","prometheus":"local-compose","alertmanager":"local-compose","loki":"local-compose"}'
     volumes:
       - workload-issuer-private:/identity/issuer-private:ro
       - workload-control-public:/identity/control-public:ro
@@ -275,6 +276,8 @@ services:
     environment:
       WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
       RUNTIME_EXECUTOR_DATABASE_PATH: /data/runtime-executor.db
+      RUNTIME_EXECUTOR_PLACEMENT: local-compose
+      RUNTIME_EXECUTOR_ID: runtime-executor-local
     volumes:
       - workload-issuer-public:/identity/issuer-public:ro
       - runtime-executor-data:/data
@@ -294,6 +297,86 @@ services:
       - runtime-actuator-user
       - runtime-actuator-order
       - runtime-actuator-payment
+
+  runtime-audit-db:
+    profiles: [orchestrator-runtime]
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: opspilot_runtime
+      POSTGRES_USER: opspilot_runtime
+      POSTGRES_PASSWORD: opspilot_runtime_local
+    volumes: [runtime-audit-data:/var/lib/postgresql/data]
+    networks: [executor-runtime]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opspilot_runtime -d opspilot_runtime"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  workload-identity-issuer-orchestrated:
+    profiles: [orchestrator-runtime]
+    build:
+      context: .
+      dockerfile: apps/workload-identity-issuer/Dockerfile
+    environment:
+      WORKLOAD_IDENTITY_SIGNING_KEY_FILE: /identity/issuer-private/private.pem
+      WORKLOAD_IDENTITY_DATABASE_PATH: /data/issuer.db
+      WORKLOAD_IDENTITY_CLIENT_KEYS: '{"executor-gateway":"/identity/gateway-public/public.pem"}'
+      WORKLOAD_IDENTITY_TARGET_PLACEMENTS: '{"redis":"kubernetes/opspilot/redis"}'
+    volumes:
+      - workload-issuer-private:/identity/issuer-private:ro
+      - workload-gateway-public:/identity/gateway-public:ro
+      - orchestrated-issuer-data:/data
+    networks: [executor-runtime]
+    depends_on:
+      workload-identity-bootstrap: {condition: service_completed_successfully}
+
+  runtime-executor-redis-a:
+    profiles: [orchestrator-runtime]
+    build:
+      context: .
+      dockerfile: apps/runtime-executor/Dockerfile
+    environment:
+      WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
+      RUNTIME_EXECUTOR_DATABASE_URL: postgresql://opspilot_runtime:opspilot_runtime_local@runtime-audit-db:5432/opspilot_runtime
+      RUNTIME_EXECUTOR_PLACEMENT: kubernetes/opspilot/redis
+      RUNTIME_EXECUTOR_ID: runtime-executor-redis-a
+      RUNTIME_EXECUTOR_TARGETS: redis
+    volumes:
+      - workload-issuer-public:/identity/issuer-public:ro
+      - actuator-redis:/run/actuators/redis
+    networks: [executor-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      runtime-audit-db: {condition: service_healthy}
+      runtime-actuator-redis: {condition: service_started}
+
+  runtime-executor-redis-b:
+    profiles: [orchestrator-runtime]
+    build:
+      context: .
+      dockerfile: apps/runtime-executor/Dockerfile
+    environment:
+      WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
+      RUNTIME_EXECUTOR_DATABASE_URL: postgresql://opspilot_runtime:opspilot_runtime_local@runtime-audit-db:5432/opspilot_runtime
+      RUNTIME_EXECUTOR_PLACEMENT: kubernetes/opspilot/redis
+      RUNTIME_EXECUTOR_ID: runtime-executor-redis-b
+      RUNTIME_EXECUTOR_TARGETS: redis
+    volumes:
+      - workload-issuer-public:/identity/issuer-public:ro
+      - actuator-redis:/run/actuators/redis
+    networks: [executor-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      runtime-audit-db: {condition: service_healthy}
+      runtime-actuator-redis: {condition: service_started}
 
   runtime-actuator-redis:
     restart: unless-stopped
@@ -507,6 +590,8 @@ volumes:
   control-canary-data: {}
   executor-data: {}
   runtime-executor-data: {}
+  runtime-audit-data: {}
+  orchestrated-issuer-data: {}
   actuator-redis: {}
   actuator-mysql: {}
   actuator-user: {}

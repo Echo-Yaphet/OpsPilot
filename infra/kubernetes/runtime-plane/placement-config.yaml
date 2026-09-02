@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: runtime-placements}
+data:
+  issuer-target-placements: >-
+    {"redis":"kubernetes/opspilot/redis","mysql":"kubernetes/opspilot/mysql","user-service":"kubernetes/opspilot/user-service","order-service":"kubernetes/opspilot/order-service","payment-service":"kubernetes/opspilot/payment-service","prometheus":"kubernetes/opspilot/redis","alertmanager":"kubernetes/opspilot/redis","loki":"kubernetes/opspilot/redis"}
+  runtime-executor-placements: >-
+    {"redis":{"url":"http://runtime-placement-redis:2375","placement":"kubernetes/opspilot/redis"},"mysql":{"url":"http://runtime-placement-mysql:2375","placement":"kubernetes/opspilot/mysql"},"user-service":{"url":"http://runtime-placement-user-service:2375","placement":"kubernetes/opspilot/user-service"},"order-service":{"url":"http://runtime-placement-order-service:2375","placement":"kubernetes/opspilot/order-service"},"payment-service":{"url":"http://runtime-placement-payment-service:2375","placement":"kubernetes/opspilot/payment-service"},"prometheus":{"url":"http://runtime-placement-redis:2375","placement":"kubernetes/opspilot/redis"},"alertmanager":{"url":"http://runtime-placement-redis:2375","placement":"kubernetes/opspilot/redis"},"loki":{"url":"http://runtime-placement-redis:2375","placement":"kubernetes/opspilot/redis"}}

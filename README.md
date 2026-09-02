@@ -109,13 +109,25 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> 默认栈没有任何 Docker socket 挂载。`runtime-executor` broker 位于不映射宿主端口的内部网络，只暴露白名单 status、stats、restart 和 stop 固定路由；原始 Docker API 不存在。Control API、Gateway 和指标 exporter 分别持有自己的非对称 workload proof key，向独立签发器领取最长 10 秒的 RS256 credential。Gateway/exporter→broker 凭证绑定 issuer、audience、subject、方法、路径、operation、target 和唯一 `jti`；Gateway 与 broker 分别持久化审计和消费记录。broker 无 Docker 权限，只能写入每目标私有 Unix socket 卷；actuator 无网络、只具 `CAP_KILL`，并拥有目标加入的 PID namespace。策略白名单与人工审批仍独立。
+> 默认栈没有任何 Docker socket 挂载。`runtime-executor` broker 位于不映射宿主端口的内部网络，只暴露白名单 status、stats、restart 和 stop 固定路由；原始 Docker API 不存在。Control API、Gateway 和指标 exporter 分别持有自己的非对称 workload proof key，向独立签发器领取最长 10 秒的 RS256 credential。Gateway/exporter→broker 凭证绑定 issuer、audience、subject、方法、路径、operation、target、placement 和唯一 `jti`；Gateway 与 broker 分别持久化审计和消费记录。broker 无 Docker 权限，只能写入每目标私有 Unix socket 卷；actuator 无网络、只具 `CAP_KILL`，并拥有目标加入的 PID namespace。策略白名单与人工审批仍独立。
 
 ## 外部 workload identity
 
 首次启动时，一次性 bootstrap job 在四个独立命名卷中生成签发器、Control API、Gateway 和 metrics exporter 的 RSA key pair。每个调用方只挂载自己的 proof private key；Gateway 与 runtime executor 只挂载签发器 public key；只有签发器挂载 JWT signing private key。签发器验证调用方对完整领取请求的签名、时间戳和一次性 nonce，并按 subject 独立限制 audience 与 operation，随后签发请求绑定的短期 RS256 credential。
 
 签发器无宿主端口且不挂载 Docker socket。Gateway 调 runtime executor 与 metrics exporter 读取 stats 均不发送静态 shared token。签发器、Gateway 和 runtime executor 的 nonce/`jti` 消费状态各自持久化；未知 workload/audience/operation、过期 proof、重复 nonce、错误签名、错误 issuer/audience/path/action/target 和重复 `jti` 都会在 actuator 访问前拒绝。生产轮换应先让验证方信任新的签发 public key，再切换签发器 signing key，最后在所有旧凭证最长 TTL 结束后移除旧信任；调用方 proof key 可按 workload 独立轮换。
+
+## Kubernetes 多主机 runtime plane
+
+`infra/kubernetes/runtime-plane` 提供可由 Kustomize 渲染的五目标部署包。每个 workload 与自己的 actuator、runtime executor 同 Pod 并启用共享进程命名空间；actuator 保持只读根目录、禁止提权且只有 `CAP_KILL`，broker 不挂载 ServiceAccount token，也不访问 Kubernetes API。Gateway 与 metrics exporter 按严格 target→URL→placement registry 路由，签发器把 placement 写入 RS256 credential，目标 broker 必须精确匹配后才消费 `jti` 和访问 Unix socket。
+
+多 broker 通过 `RUNTIME_EXECUTOR_DATABASE_URL` 使用 PostgreSQL：全局主键原子拒绝跨节点重放，action audit 同时记录 placement 与 executor instance。未配置 DSN 时默认 Compose 继续使用兼容 SQLite。部署前需要准备镜像和外部 Secret；完整清单、Secret contract 与 NetworkPolicy 见 `infra/kubernetes/runtime-plane/README.md`。本地可重复验收：
+
+```bash
+make runtime-identity-validate
+make runtime-orchestrator-validate
+kubectl kustomize infra/kubernetes/runtime-plane >/tmp/opspilot-runtime-plane.yaml
+```
 
 ## 其他故障场景
 

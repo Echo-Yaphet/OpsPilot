@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runtime-placement}
+spec:
+  template:
+    spec:
+      containers:
+        - name: workload
+          image: redis:7.4-alpine
+          args: ["redis-server"]
+          ports: [{name: workload, containerPort: 6379}]
+        - name: actuator
+          env:
+            - {name: RUNTIME_ACTUATOR_TARGET, value: redis}
+            - {name: RUNTIME_ACTUATOR_PROCESS_MATCH, value: redis-server}
+            - {name: RUNTIME_ACTUATOR_STATE_DIR, value: /run/actuators/redis}
+            - {name: RUNTIME_ACTUATOR_ALLOW_STOP, value: "true"}
+        - name: runtime-executor
+          env:
+            - {name: RUNTIME_EXECUTOR_TARGETS, value: redis}
+            - {name: RUNTIME_EXECUTOR_PLACEMENT, value: kubernetes/opspilot/redis}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runtime-placement}
+spec:
+  ports:
+    - {name: workload, port: 6379, targetPort: workload}

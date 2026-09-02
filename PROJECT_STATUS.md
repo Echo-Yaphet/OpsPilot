@@ -1,13 +1,13 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-02 (OS/runtime-enforced least-privilege executor milestone)
+Last updated: 2026-09-02 (orchestrator-native workload placement and shared runtime audit milestone)
 
 ## Continue from here
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
 3. Preserve the existing HTTP interfaces and `IncidentState` model while implementing the next phase.
-4. The default stack has no Docker socket or Docker SDK execution path. Gateway and the metrics exporter authenticate to the runtime executor with externally issued RS256 credentials; the broker persists replay/audit state and can reach only private per-target Unix sockets. Each networkless actuator owns one PID namespace, has only `CAP_KILL`, and can signal only the target workload that joins that namespace. Policy, approval, typed allowlists, identity, replay protection, and recommendation-only defaults remain independent.
+4. The default stack has no Docker socket or Docker SDK execution path. Gateway and the metrics exporter authenticate to runtime executors with externally issued, placement-bound RS256 credentials. Compose retains its local SQLite broker; the Kubernetes package places one broker/actuator beside each workload and uses shared PostgreSQL for cross-node replay/audit state. Policy, approval, typed allowlists, identity, replay protection, and recommendation-only defaults remain independent.
 
 The completed LangGraph milestone preserved the Redis-down scenario end to end, represents every Agent as a real graph node, retains inspectable per-incident graph state, and requires no breaking Dashboard interface changes.
 
@@ -32,6 +32,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 ### Runtime and observability
 
 - Docker Compose monorepo with 21 running services, including an external workload-identity issuer, Alertmanager, a separate executor gateway, a socketless identity broker, five OS-isolated target actuators, and a socketless container metrics exporter.
+- A Kustomize runtime-plane package defines five independently schedulable workload placements. Each Pod shares only its workload process namespace with an actuator and broker, carries no ServiceAccount token, persists quarantine state, and exposes the authenticated broker port only to labeled runtime clients.
+- Runtime brokers support either the compatible local SQLite store or a shared PostgreSQL DSN. PostgreSQL uses atomic global `jti` uniqueness and records placement plus executor instance on every action audit row; concurrent schema bootstrap is serialized with a transaction advisory lock.
 - Three FastAPI sample applications: `user-service`, `order-service`, and `payment-service`.
 - MySQL 8.4 and Redis 7.4 dependencies.
 - Prometheus scraping all three applications every five seconds.
@@ -82,12 +84,12 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - The default stack has no Docker socket mount or Docker SDK execution path. Control API remains outside the internal executor network, while Gateway and the metrics exporter can reach only the socketless runtime executor.
 - The gateway accepts typed `restart_container` and `stop_container` requests only, applies operation-specific target allowlists, and never accepts shell commands.
 - The gateway image contains no Docker SDK; it calls fixed status, restart, and stop runtime-executor routes over a dedicated internal network.
-- The runtime executor has no host port or Docker authority, independently enforces operation-specific target allowlists, persists credential consumption and runtime audit records in SQLite, and dispatches only over private per-target Unix sockets. Its read-only stats route returns only the process CPU counters needed by the exporter.
+- The runtime executor has no Docker authority, independently enforces operation-specific and instance-local target allowlists, persists credential consumption and runtime audit records in SQLite or shared PostgreSQL, and dispatches only over private per-target Unix sockets. Its read-only stats route returns only the process CPU counters needed by the exporter.
 - Five networkless actuators each own a target PID namespace and private socket. Each actuator runs with a read-only root filesystem, all capabilities dropped except `CAP_KILL`, and `no-new-privileges`; the matching workload joins that namespace, so the kernel limits signal authority to that target. Persistent per-target quarantine state makes stop/restart deterministic across workload replacement.
 - Gateway allow, deny, and failure outcomes are persisted independently in its `execution_audit` SQLite table and volume.
 - Gateway failures and timeouts produce `execution_failed` incidents and do not enter recovery verification.
 - An independent issuer authenticates Control API, Gateway, and metrics exporter with separate asymmetric proof keys, persistent one-use request nonces, and subject-specific audience/operation policy. Only the issuer holds the RS256 signing private key.
-- Control→Gateway, Gateway→runtime-executor, and exporter→runtime-executor credentials have a bounded lifetime and carry issuer, audience, subject, issued/expiry times, unique `jti`, HTTP method/path, operation, and target claims.
+- Control→Gateway, Gateway→runtime-executor, and exporter→runtime-executor credentials have a bounded lifetime and carry issuer, audience, subject, issued/expiry times, unique `jti`, HTTP method/path, operation, and target claims. Runtime credentials additionally carry an issuer-allowlisted workload placement that must exactly match the receiving broker.
 - Gateway and runtime executor independently reject expired, wrong-audience, wrong-subject, request/action-mismatched, and replayed credentials before actuator access.
 - Consumed credential IDs are persisted atomically in independent Gateway and runtime-executor SQLite stores; both action-audit paths retain workload subject, credential ID, and external issuer key ID.
 - Static Gateway/exporter execution tokens are absent. Callers hold only their own proof private key and verifiers hold only issuer public trust.
@@ -128,6 +130,14 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the orchestrator-native placement and shared runtime audit milestone:
+
+- The current-source suite passed 108 backend tests with the existing single LangGraph deprecation warning. `kubectl kustomize infra/kubernetes/runtime-plane` rendered 1,166 lines covering seven Deployments, eight Services, five workload placements, five shared-process namespaces, per-placement persistent state, runtime NetworkPolicies, and the shared database without a cluster connection.
+- The isolated `orchestrator-runtime` profile ran two distinct Redis broker instances against one PostgreSQL store. A placement-bound action succeeded on `runtime-executor-redis-a`; the same credential returned 401 on `runtime-executor-redis-b`; a wrong placement was denied 403 by the external issuer. The shared audit row retained `restart_container`, `redis`, `allowed`, `kubernetes/opspilot/redis`, and the executing instance ID. A concurrent first-start PostgreSQL DDL race was reproduced and fixed with an advisory transaction lock.
+- The rebuilt default 21-service stack passed Compose validation, Promtail 3.5.3 syntax, all nine Prometheus rules, and smoke. Live inspection retained zero Docker socket mounts, Control API network isolation, target PID-namespace pairing, networkless/read-only actuators, `no-new-privileges`, and only `CAP_KILL`.
+- Default runtime identity checks returned 401 without identity, 403 for an unknown placement target, 200 on first use, 401 on replay, and 404 for a raw route. A bounded payment CPU fault fired at about `1.0022` cores, cleared, and left incident `e63a03ee-a5e4-4f3d-b240-2a9079268ec5` at `alert_resolved`, recommendation-only, with no execution or Verification.
+- A real Redis outage produced recommendation-only incident `5645e674-0a45-4a15-a09c-7cf3a8030a8b`, approval-blocked incident `608a9bf8-5f44-4c4d-8dd3-78bb97b26ccf`, and approved recovery incident `ca73a307-0fea-4c7b-9108-1786ac750e70`, `resolved`, `execution_result="restarted redis"`, `verified=true` on verification attempt three.
 
 Latest verification for the OS/runtime-enforced least-privilege executor milestone:
 
@@ -465,6 +475,7 @@ Local entry points:
 - `apps/control-api/opspilot/execution.py`: execution allowlist policy, typed action, and restricted executor boundary.
 - `apps/executor-gateway/app.py`: authenticated typed Docker operations, operation-specific allowlists, and independent execution audit storage.
 - `apps/runtime-executor/app.py`: fixed-route external identity verifier, replay/audit persistence, target allowlists, and private Unix-socket dispatch.
+- `apps/runtime-executor/runtime_store.py`: compatible SQLite plus multi-replica PostgreSQL replay/audit backend.
 - `apps/runtime-actuator/app.py`: networkless target-local signal and trimmed process-stat actuator.
 - `apps/container-metrics-exporter/app.py`: socketless CPU exporter backed by the runtime executor's trimmed read-only stats route.
 - `apps/promtail/tls_syslog_gateway.py`: client-certificate-enforcing TCP 1514 gateway and loopback-only Promtail relay.
@@ -486,6 +497,8 @@ Local entry points:
 - `scripts/runtime-target-init.sh`: Redis/MySQL PID-namespace lifecycle wrapper that keeps workload processes targetable across stop/restart.
 - `scripts/recover-runtime-dependencies.sh`: actuator-aware local Redis/MySQL/payment recovery helper.
 - `infra/vault-agent/`: minimal read-only policy, atomic KV v2 template, and AppRole-based host Agent configuration example.
+- `infra/kubernetes/runtime-plane/`: Kustomize package for five workload-scoped placements, Gateway/issuer routing, NetworkPolicies, persistent quarantine state, and shared PostgreSQL.
+- `scripts/validate-runtime-identity.py` and `scripts/validate-orchestrator-runtime.py`: repeatable default and cross-broker identity/replay acceptance.
 - `tests/test_workflow.py`: approval, policy allow/deny, Redis-path, graph inspection, inconclusive RCA, verification failure, and stale-log precedence tests.
 
 ## Current limitations
@@ -497,7 +510,7 @@ Local entry points:
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation uses target-process counters with strict per-service thresholds and health/staleness alerts. The local exporter still polls on scrape, covers only the three business services, and requires recreation to change targets or thresholds; last-success timestamps are process-local and reset when the exporter restarts.
 - Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack has no file discovery, shared target files, or persisted positions. Vault Agent is the first concrete external delivery controller, while the strict downstream contract remains provider-neutral for a future cloud Secret CSI adapter. Vault Agent must run on the Docker host because its successful-render hook invokes the host Docker CLI; production still needs normal host service hardening and a non-dev Vault cluster. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
-- The least-privilege executor is currently a local Compose topology with five fixed target actuators. It depends on Linux PID namespaces and `CAP_KILL`, measures target processes rather than full cgroups, and requires service recreation when the target set changes. Runtime-executor replay/audit SQLite is single-node; production multi-host deployment needs orchestrator-native placement and shared durable audit storage.
+- The local Compose path remains fixed and intentionally uses SQLite. The Kubernetes runtime plane supports independently scheduled workload placements and shared PostgreSQL, but no Kubernetes context was configured on this host, so this turn validated deterministic Kustomize rendering plus a live two-broker PostgreSQL profile rather than applying to a real multi-node cluster. Production still needs registry image publication, external Secret provisioning, an HA managed PostgreSQL endpoint, and cluster-level rollout/failure-domain acceptance. Kubernetes containers share a Pod network; the actuator therefore has no TCP listener or ServiceAccount and is protected by Pod NetworkPolicy, but is not a separate network namespace as in Compose. CPU usage remains process-based rather than cgroup-v2 based.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
@@ -683,6 +696,14 @@ Local entry points:
 - Preserved externally issued 10-second credentials, request/action/target binding, recommendation-only defaults, independent policy and approval gates, and all public state/evidence seams.
 - Revalidated full tests/configuration, Promtail and nine Prometheus rules, 21-service deployment, CPU recommendation-only behavior, identity/target/replay/raw-route denials, no-socket/network/capability isolation, and the complete Redis recommendation → approval block → approved verified recovery path.
 
+### Completed: orchestrator-native workload placement and shared runtime audit
+
+- Added strict target-to-placement registries for Gateway, metrics exporter, and external issuer; runtime RS256 credentials now bind placement in addition to request, action, and target.
+- Added instance-local target scope and exact placement verification before `jti` consumption or actuator access.
+- Added a shared PostgreSQL replay/audit backend with atomic cross-instance uniqueness, placement/executor attribution, and race-safe concurrent bootstrap while retaining default SQLite compatibility.
+- Added a five-target Kubernetes Kustomize runtime plane with shared process namespaces, per-workload persistent actuator state, no ServiceAccount tokens, least-privilege security contexts, runtime NetworkPolicies, and an external Secret contract.
+- Revalidated live two-broker shared replay denial, default identity boundaries, the rebuilt 21-service Compose stack, CPU recommendation-only behavior, and Redis recommendation → approval block → approved verified recovery.
+
 ### Then: knowledge and further production safety
 
 - Completed deterministic SQLite-backed runbook and historical-incident retrieval with RCA/Solution evidence integration.
@@ -691,10 +712,10 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
 - If another target platform requires it, add a cloud Secret CSI adapter behind the same strict bundle seam; Vault Agent is now the validated concrete controller.
-- Generalize the fixed local actuator set into an orchestrator-native multi-host deployment with workload-scoped placement, durable shared replay/audit storage, and equivalent PID/cgroup-enforced action and metrics boundaries.
+- Apply the rendered runtime plane to a real multi-node Kubernetes cluster, replace the acceptance PostgreSQL StatefulSet with managed HA PostgreSQL, publish immutable images/Secrets through the deployment system, and validate node loss plus placement rescheduling without replay/audit gaps.
 
 ## Handoff prompt
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then run `git status --short --branch`, `docker compose ps`, `docker compose config --quiet`, and `make smoke`. The default stack has 21 running services and no Docker socket or Docker SDK execution path; the persistent primary Verification-policy history has accepted signed revision 104, so every new signed revision must exceed 104. Gateway and metrics exporter use separate proof keys to obtain request-bound RS256 credentials for a socketless runtime executor, which persists replay/audit state and dispatches only to private per-target Unix sockets. Five networkless actuators own the target PID namespaces, run read-only with `no-new-privileges` and only `CAP_KILL`, and retain per-target quarantine state. Runtime-log Vault delivery, mTLS rotation, Loki labels/freshness, CPU/Redis loops, Alertmanager recommendation-only behavior, independent policy/approval gates, identity denials, and live Redis verified recovery remain validated. Preserve all HTTP interfaces, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard formats, revision >104 rule, and protected IDE/system files. Next generalize the fixed local actuator topology into an orchestrator-native multi-host deployment with workload-scoped placement and durable shared replay/audit state while retaining identical safety and recommendation-only behavior; rerun full tests, deployment, live acceptance, docs, functional-only staging, commit, and push.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then refresh Git, Compose, and smoke. The default 21-service Compose stack remains socketless and uses local SQLite. Runtime credentials now bind an issuer-allowlisted placement; Gateway/exporter route through a strict target registry; each broker enforces its own target and placement before actuator access. `infra/kubernetes/runtime-plane` renders five independently schedulable workload/actuator/broker Pods with persistent quarantine state, no ServiceAccount tokens, NetworkPolicies, and shared PostgreSQL replay/audit state. Live two-broker acceptance proved cross-instance replay denial and placement/audit attribution; this host had no Kubernetes context, so real multi-node apply/node-loss acceptance remains next. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, Verification revision >104, and protected IDE/system files. Next publish immutable images and external Secrets to a real multi-node cluster, use managed HA PostgreSQL, and validate placement rescheduling/node loss without audit or replay gaps; then rerun full safety acceptance and push.

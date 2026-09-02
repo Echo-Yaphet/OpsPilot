@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runtime-placement}
+spec:
+  template:
+    spec:
+      containers:
+        - name: workload
+          image: opspilot-order-service:latest
+          ports: [{name: workload, containerPort: 8002}]
+          env:
+            - {name: SERVICE_NAME, value: order-service}
+            - {name: PORT, value: "8002"}
+          envFrom: [{secretRef: {name: service-runtime-environment}}]
+        - name: actuator
+          env:
+            - {name: RUNTIME_ACTUATOR_TARGET, value: order-service}
+            - {name: RUNTIME_ACTUATOR_PROCESS_MATCH, value: "/usr/local/bin/python3.11 /usr/local/bin/uvicorn app:app --host"}
+            - {name: RUNTIME_ACTUATOR_STATE_DIR, value: /run/actuators/order-service}
+        - name: runtime-executor
+          env:
+            - {name: RUNTIME_EXECUTOR_TARGETS, value: order-service}
+            - {name: RUNTIME_EXECUTOR_PLACEMENT, value: kubernetes/opspilot/order-service}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runtime-placement}
+spec:
+  ports:
+    - {name: workload, port: 8002, targetPort: workload}

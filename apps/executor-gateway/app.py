@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,42 @@ RUNTIME_EXECUTOR_TIMEOUT = float(os.getenv("RUNTIME_EXECUTOR_TIMEOUT", "15"))
 ISSUER_URL = os.getenv("WORKLOAD_IDENTITY_ISSUER_URL", "http://workload-identity-issuer:8085")
 WORKLOAD_PRIVATE_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PRIVATE_KEY_FILE", "/identity/gateway-private/private.pem")
 RUNTIME_AUDIENCE = os.getenv("RUNTIME_EXECUTOR_IDENTITY_AUDIENCE", "opspilot-runtime-executor")
+
+
+def load_runtime_placements() -> dict[str, dict[str, str]]:
+    raw = os.getenv("RUNTIME_EXECUTOR_PLACEMENTS", "")
+    if not raw:
+        return {}
+    try:
+        placements = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("RUNTIME_EXECUTOR_PLACEMENTS must be valid JSON") from exc
+    if not isinstance(placements, dict):
+        raise ValueError("RUNTIME_EXECUTOR_PLACEMENTS must be a JSON object")
+    validated = {}
+    for target, route in placements.items():
+        if target not in RESTART_TARGETS | {"prometheus", "alertmanager", "loki"}:
+            raise ValueError(f"runtime placement target is not allowlisted: {target}")
+        if not isinstance(route, dict) or set(route) != {"url", "placement"}:
+            raise ValueError(f"runtime placement for {target} must contain url and placement")
+        if not all(isinstance(route[key], str) and route[key] for key in ("url", "placement")):
+            raise ValueError(f"runtime placement for {target} is invalid")
+        validated[target] = route
+    return validated
+
+
+RUNTIME_PLACEMENTS = load_runtime_placements()
+if os.getenv("RUNTIME_EXECUTOR_PLACEMENTS_REQUIRED", "false").lower() == "true":
+    required_targets = RESTART_TARGETS | {"prometheus", "alertmanager", "loki"}
+    if set(RUNTIME_PLACEMENTS) != set(required_targets):
+        raise ValueError("RUNTIME_EXECUTOR_PLACEMENTS must configure every target")
+
+
+def runtime_route(target: str) -> tuple[str, str]:
+    route = RUNTIME_PLACEMENTS.get(target)
+    if route:
+        return route["url"].rstrip("/"), route["placement"]
+    return RUNTIME_EXECUTOR_URL.rstrip("/"), "local-compose"
 
 
 class ActionRequest(BaseModel):
@@ -106,15 +143,17 @@ def authorize(request: Request, authorization: str | None = Header(None)) -> dic
 
 
 async def runtime_request(method: str, path: str, operation: str, target: str) -> dict:
+    runtime_url, placement = runtime_route(target)
     credential = await request_identity(
         ISSUER_URL, WORKLOAD_PRIVATE_KEY_FILE, "executor-gateway",
         audience=RUNTIME_AUDIENCE, ttl_seconds=10, method=method, path=path,
         operation=operation, target=target,
+        placement=placement,
     )
     headers = {"Authorization": f"Bearer {credential}"}
     async with httpx.AsyncClient(timeout=RUNTIME_EXECUTOR_TIMEOUT) as client:
         response = await client.request(
-            method, f"{RUNTIME_EXECUTOR_URL.rstrip('/')}{path}", headers=headers,
+            method, f"{runtime_url}{path}", headers=headers,
         )
     if response.is_error:
         try:

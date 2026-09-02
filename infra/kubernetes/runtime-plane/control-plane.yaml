@@ -1,0 +1,119 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: workload-identity-issuer-data}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 128Mi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: executor-gateway-data}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 128Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: workload-identity-issuer}
+spec:
+  selector: {app.kubernetes.io/name: workload-identity-issuer}
+  ports: [{name: http, port: 8085, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: workload-identity-issuer}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: workload-identity-issuer}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: workload-identity-issuer}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: issuer
+          image: opspilot-workload-identity-issuer:latest
+          ports: [{name: http, containerPort: 8085}]
+          env:
+            - {name: WORKLOAD_IDENTITY_SIGNING_KEY_FILE, value: /identity/signing/private.pem}
+            - {name: WORKLOAD_IDENTITY_DATABASE_PATH, value: /data/issuer.db}
+            - name: WORKLOAD_IDENTITY_CLIENT_KEYS
+              value: '{"control-api":"/identity/clients/control-api.pem","executor-gateway":"/identity/clients/executor-gateway.pem","container-metrics-exporter":"/identity/clients/container-metrics-exporter.pem"}'
+            - name: WORKLOAD_IDENTITY_TARGET_PLACEMENTS
+              valueFrom: {configMapKeyRef: {name: runtime-placements, key: issuer-target-placements}}
+            - {name: WORKLOAD_IDENTITY_TARGET_PLACEMENTS_REQUIRED, value: "true"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: signing, mountPath: /identity/signing, readOnly: true}
+            - {name: clients, mountPath: /identity/clients, readOnly: true}
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: signing
+          secret: {secretName: workload-identity-issuer-signing}
+        - name: clients
+          secret: {secretName: workload-identity-client-public-keys}
+        - name: data
+          persistentVolumeClaim: {claimName: workload-identity-issuer-data}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: executor-gateway}
+spec:
+  selector: {app.kubernetes.io/name: executor-gateway}
+  ports: [{name: http, port: 8090, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: executor-gateway}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: executor-gateway}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: executor-gateway
+        opspilot.io/runtime-client: "true"
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: gateway
+          image: opspilot-executor-gateway:latest
+          ports: [{name: http, containerPort: 8090}]
+          env:
+            - {name: WORKLOAD_IDENTITY_ISSUER_URL, value: http://workload-identity-issuer:8085}
+            - {name: WORKLOAD_IDENTITY_PRIVATE_KEY_FILE, value: /identity/client/private.pem}
+            - {name: WORKLOAD_IDENTITY_PUBLIC_KEY_FILE, value: /identity/issuer/public.pem}
+            - {name: EXECUTOR_DATABASE_PATH, value: /data/executor.db}
+            - name: RUNTIME_EXECUTOR_PLACEMENTS
+              valueFrom: {configMapKeyRef: {name: runtime-placements, key: runtime-executor-placements}}
+            - {name: RUNTIME_EXECUTOR_PLACEMENTS_REQUIRED, value: "true"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: client-key, mountPath: /identity/client, readOnly: true}
+            - {name: issuer-key, mountPath: /identity/issuer, readOnly: true}
+            - {name: data, mountPath: /data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: client-key
+          secret: {secretName: executor-gateway-proof-key}
+        - name: issuer-key
+          secret: {secretName: workload-identity-issuer-public}
+        - name: data
+          persistentVolumeClaim: {claimName: executor-gateway-data}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}

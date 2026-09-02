@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runtime-placement}
+spec:
+  template:
+    spec:
+      containers:
+        - name: workload
+          image: opspilot-payment-service:latest
+          ports: [{name: workload, containerPort: 8003}]
+          env:
+            - {name: SERVICE_NAME, value: payment-service}
+            - {name: PORT, value: "8003"}
+          envFrom: [{secretRef: {name: service-runtime-environment}}]
+        - name: actuator
+          env:
+            - {name: RUNTIME_ACTUATOR_TARGET, value: payment-service}
+            - {name: RUNTIME_ACTUATOR_PROCESS_MATCH, value: "/usr/local/bin/python3.11 /usr/local/bin/uvicorn app:app --host"}
+            - {name: RUNTIME_ACTUATOR_STATE_DIR, value: /run/actuators/payment-service}
+        - name: runtime-executor
+          env:
+            - {name: RUNTIME_EXECUTOR_TARGETS, value: payment-service}
+            - {name: RUNTIME_EXECUTOR_PLACEMENT, value: kubernetes/opspilot/payment-service}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runtime-placement}
+spec:
+  ports:
+    - {name: workload, port: 8003, targetPort: workload}

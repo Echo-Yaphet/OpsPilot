@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime-placement
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: runtime-placement
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: runtime-placement
+        opspilot.io/runtime-placement: "true"
+    spec:
+      automountServiceAccountToken: false
+      shareProcessNamespace: true
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    opspilot.io/runtime-placement: "true"
+      containers:
+        - name: workload
+          image: opspilot/workload:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+        - name: actuator
+          image: opspilot-runtime-actuator:latest
+          env:
+            - {name: RUNTIME_ACTUATOR_TARGET, value: target}
+            - {name: RUNTIME_ACTUATOR_PROCESS_MATCH, value: process}
+            - {name: RUNTIME_ACTUATOR_STATE_DIR, value: /run/actuators/target}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"], add: ["KILL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: runtime-state, mountPath: /run/actuators}
+            - {name: tmp, mountPath: /tmp}
+        - name: runtime-executor
+          image: opspilot-runtime-executor:latest
+          env:
+            - {name: RUNTIME_EXECUTOR_TARGETS, value: target}
+            - {name: RUNTIME_EXECUTOR_PLACEMENT, value: kubernetes/opspilot/target}
+            - {name: RUNTIME_EXECUTOR_ID, valueFrom: {fieldRef: {fieldPath: metadata.uid}}}
+            - {name: RUNTIME_EXECUTOR_DATABASE_URL, valueFrom: {secretKeyRef: {name: runtime-audit-database, key: url}}}
+            - {name: WORKLOAD_IDENTITY_PUBLIC_KEY_FILE, value: /identity/public.pem}
+          ports:
+            - {name: runtime, containerPort: 2375}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: runtime-state, mountPath: /run/actuators}
+            - {name: issuer-public, mountPath: /identity, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: runtime-state
+          persistentVolumeClaim: {claimName: runtime-placement-state}
+        - name: issuer-public
+          secret: {secretName: workload-identity-issuer-public}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}

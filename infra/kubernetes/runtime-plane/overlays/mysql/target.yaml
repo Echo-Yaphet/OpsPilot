@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: runtime-placement}
+spec:
+  template:
+    spec:
+      securityContext: {fsGroup: 999}
+      containers:
+        - name: workload
+          image: mysql:8.4
+          args: ["mysqld"]
+          ports: [{name: workload, containerPort: 3306}]
+          envFrom: [{secretRef: {name: mysql-runtime-environment}}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 999
+            runAsGroup: 999
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts: [{name: mysql-data, mountPath: /var/lib/mysql}]
+        - name: actuator
+          env:
+            - {name: RUNTIME_ACTUATOR_TARGET, value: mysql}
+            - {name: RUNTIME_ACTUATOR_PROCESS_MATCH, value: mysqld}
+            - {name: RUNTIME_ACTUATOR_STATE_DIR, value: /run/actuators/mysql}
+            - {name: RUNTIME_ACTUATOR_ALLOW_STOP, value: "true"}
+        - name: runtime-executor
+          env:
+            - {name: RUNTIME_EXECUTOR_TARGETS, value: mysql}
+            - {name: RUNTIME_EXECUTOR_PLACEMENT, value: kubernetes/opspilot/mysql}
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim: {claimName: mysql-data}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: runtime-placement}
+spec:
+  ports:
+    - {name: workload, port: 3306, targetPort: workload}

@@ -157,3 +157,13 @@ def test_gateway_rejects_unknown_key_id_before_action(tmp_path, monkeypatch):
     )
     assert response.status_code == 401
     assert "key ID" in response.json()["detail"]
+
+
+def test_gateway_uses_trusted_workload_placement_route(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "RUNTIME_EXECUTOR_PLACEMENTS",
+        '{"redis":{"url":"http://redis-runtime:2375","placement":"prod/redis"}}',
+    )
+    module, _ = load_gateway(tmp_path, monkeypatch)
+    assert module.runtime_route("redis") == ("http://redis-runtime:2375", "prod/redis")
+    assert module.runtime_route("mysql") == ("http://runtime-executor:2375", "local-compose")

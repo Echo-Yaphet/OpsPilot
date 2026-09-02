@@ -15,6 +15,23 @@ KEY_ID = os.getenv("WORKLOAD_IDENTITY_KEY_ID", "opspilot-issuer-v1")
 PRIVATE_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_SIGNING_KEY_FILE", "/identity/issuer-private/private.pem")
 DATABASE_PATH = os.getenv("WORKLOAD_IDENTITY_DATABASE_PATH", "/data/issuer.db")
 CLIENT_KEYS = json.loads(os.getenv("WORKLOAD_IDENTITY_CLIENT_KEYS", "{}"))
+DEFAULT_TARGETS = (
+    "redis", "mysql", "user-service", "order-service", "payment-service",
+    "prometheus", "alertmanager", "loki",
+)
+TARGET_PLACEMENTS = json.loads(os.getenv(
+    "WORKLOAD_IDENTITY_TARGET_PLACEMENTS",
+    json.dumps({target: "local-compose" for target in DEFAULT_TARGETS}),
+))
+if (
+    not isinstance(TARGET_PLACEMENTS, dict)
+    or not set(TARGET_PLACEMENTS).issubset(DEFAULT_TARGETS)
+    or not all(isinstance(value, str) and value for value in TARGET_PLACEMENTS.values())
+):
+    raise ValueError("WORKLOAD_IDENTITY_TARGET_PLACEMENTS is invalid")
+if os.getenv("WORKLOAD_IDENTITY_TARGET_PLACEMENTS_REQUIRED", "false").lower() == "true":
+    if set(TARGET_PLACEMENTS) != set(DEFAULT_TARGETS):
+        raise ValueError("WORKLOAD_IDENTITY_TARGET_PLACEMENTS must configure every target")
 ALLOWED_AUDIENCES = {
     "control-api": {"opspilot-executor-gateway"},
     "executor-gateway": {"opspilot-runtime-executor"},
@@ -34,6 +51,7 @@ class IdentityRequest(BaseModel):
     path: str
     operation: str
     target: str
+    placement: str | None = None
 
 
 def initialize_database() -> None:
@@ -80,9 +98,14 @@ async def issue_identity(
         raise HTTPException(status_code=403, detail="workload or audience is not allowlisted")
     if request.operation not in ALLOWED_OPERATIONS[subject]:
         raise HTTPException(status_code=403, detail="workload operation is not allowlisted")
+    if request.audience == "opspilot-runtime-executor":
+        if TARGET_PLACEMENTS.get(request.target) != request.placement:
+            raise HTTPException(status_code=403, detail="workload placement is not allowlisted")
+    elif request.placement is not None:
+        raise HTTPException(status_code=403, detail="placement is not valid for this audience")
     if not all((x_workload_timestamp, x_workload_nonce, x_workload_signature)):
         raise HTTPException(status_code=401, detail="workload proof is required")
-    payload = request.model_dump()
+    payload = request.model_dump(exclude_none=True)
     try:
         verify_issuer_request(
             Path(key_file).read_bytes(), subject, x_workload_timestamp,
@@ -95,5 +118,6 @@ async def issue_identity(
         Path(PRIVATE_KEY_FILE).read_bytes(), key_id=KEY_ID, issuer=ISSUER,
         audience=request.audience, subject=subject, ttl_seconds=request.ttl_seconds,
         method=request.method, path=request.path, operation=request.operation, target=request.target,
+        placement=request.placement,
     )
     return {"token": token, "expires_in": request.ttl_seconds, "key_id": KEY_ID}

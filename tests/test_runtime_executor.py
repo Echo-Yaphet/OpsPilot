@@ -42,7 +42,8 @@ def auth(
         ISSUER_PRIVATE, key_id="opspilot-issuer-v1",
         issuer="opspilot-workload-identity-issuer", audience="opspilot-runtime-executor",
         subject=subject, ttl_seconds=10, method=method, path=path,
-        operation=operation, target=target, credential_id=credential_id,
+        operation=operation, target=target, placement="local-compose",
+        credential_id=credential_id,
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -119,6 +120,44 @@ def test_runtime_executor_persists_audit_and_replay_denial(monkeypatch):
     assert consumed == ("executor-gateway",)
 
 
+def test_runtime_executor_rejects_wrong_placement_before_actuator_access(monkeypatch):
+    module, client = load_executor(monkeypatch)
+    called = False
+
+    async def must_not_run(*_args):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(module, "actuator_request", must_not_run)
+    path = "/v1/containers/redis/restart"
+    token = mint_external_identity(
+        ISSUER_PRIVATE, key_id="opspilot-issuer-v1",
+        issuer="opspilot-workload-identity-issuer", audience="opspilot-runtime-executor",
+        subject="executor-gateway", ttl_seconds=10, method="POST", path=path,
+        operation="restart_container", target="redis", placement="cluster-b/redis",
+    )
+    response = client.post(path, headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 401
+    assert "placement" in response.json()["detail"]
+    assert called is False
+
+
+def test_runtime_store_replay_is_shared_between_executor_instances(tmp_path):
+    from runtime_store import ReplayError, RuntimeStore
+
+    shared_path = str(tmp_path / "shared-runtime.db")
+    first = RuntimeStore(database_path=shared_path)
+    second = RuntimeStore(database_path=shared_path)
+    identity = {"jti": "shared-jti", "sub": "executor-gateway", "exp": 4_000_000_000}
+    first.consume(identity, placement="cluster-a/redis", executor_id="executor-a")
+    try:
+        second.consume(identity, placement="cluster-b/redis", executor_id="executor-b")
+    except ReplayError as exc:
+        assert "already been used" in str(exc)
+    else:
+        raise AssertionError("a second executor accepted a replayed shared credential")
+
+
 def test_compose_actuators_have_target_scoped_kernel_capabilities_and_no_socket():
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     assert "/var/run/docker.sock" not in compose
@@ -129,3 +168,25 @@ def test_compose_actuators_have_target_scoped_kernel_capabilities_and_no_socket(
     assert "security_opt: [no-new-privileges:true]" in compose
     assert "runtime-executor:" in compose and "read_only: true" in compose
     assert "runtime-actuator-payment" in compose
+    assert "RUNTIME_EXECUTOR_PLACEMENT: local-compose" in compose
+
+
+def test_kubernetes_runtime_plane_preserves_workload_scoped_boundaries():
+    root = Path("infra/kubernetes/runtime-plane")
+    base = (root / "base/deployment.yaml").read_text(encoding="utf-8")
+    placement = (root / "placement-config.yaml").read_text(encoding="utf-8")
+    policies = (root / "network-policies.yaml").read_text(encoding="utf-8")
+    rendered_targets = ["redis", "mysql", "user-service", "order-service", "payment-service"]
+
+    assert "shareProcessNamespace: true" in base
+    assert "automountServiceAccountToken: false" in base
+    assert 'capabilities: {drop: ["ALL"], add: ["KILL"]}' in base
+    assert "readOnlyRootFilesystem: true" in base
+    assert "RUNTIME_EXECUTOR_DATABASE_URL" in base
+    assert "runtime-audit-database" in base
+    assert "port: 2375" in policies and 'opspilot.io/runtime-client: "true"' in policies
+    for target in rendered_targets:
+        assert f'"{target}"' in placement
+        overlay = (root / f"overlays/{target}/target.yaml").read_text(encoding="utf-8")
+        assert f"kubernetes/opspilot/{target}" in overlay
+        assert f"RUNTIME_EXECUTOR_TARGETS, value: {target}" in overlay

@@ -74,6 +74,37 @@ def test_external_issuer_rejects_proof_replay_and_unallowed_audience(tmp_path, m
     assert client.post("/v1/identity", json=payload, headers=denied_headers).status_code == 403
 
 
+def test_external_issuer_binds_runtime_identity_to_allowlisted_placement(tmp_path, monkeypatch):
+    gateway_private, gateway_public = key_pair()
+    gateway_public_path = tmp_path / "gateway-public.pem"
+    gateway_public_path.write_bytes(gateway_public)
+    module, client, _, issuer_public = load_issuer(tmp_path, monkeypatch)
+    module.CLIENT_KEYS = {"executor-gateway": str(gateway_public_path)}
+    payload = {
+        "audience": "opspilot-runtime-executor", "ttl_seconds": 10,
+        "method": "POST", "path": "/v1/containers/redis/restart",
+        "operation": "restart_container", "target": "redis", "placement": "local-compose",
+    }
+    response = client.post(
+        "/v1/identity", json=payload,
+        headers=sign_issuer_request(gateway_private, "executor-gateway", payload),
+    )
+    assert response.status_code == 200
+    identity = verify_external_identity(
+        response.json()["token"], issuer_public, key_id=module.KEY_ID,
+        issuer=module.ISSUER, audience="opspilot-runtime-executor",
+        method="POST", path=payload["path"], maximum_ttl_seconds=15,
+    )
+    assert identity["placement"] == "local-compose"
+
+    payload["placement"] = "other-cluster/redis"
+    denied = client.post(
+        "/v1/identity", json=payload,
+        headers=sign_issuer_request(gateway_private, "executor-gateway", payload),
+    )
+    assert denied.status_code == 403
+
+
 @pytest.mark.parametrize("change", ["audience", "path", "expired", "lifetime", "key_id"])
 def test_external_identity_rejects_invalid_issuer_contract(change):
     private, public = key_pair()

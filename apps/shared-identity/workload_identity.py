@@ -145,6 +145,7 @@ def mint_external_identity(
     path: str,
     operation: str,
     target: str,
+    placement: str | None = None,
     now: int | None = None,
     credential_id: str | None = None,
 ) -> str:
@@ -158,6 +159,10 @@ def mint_external_identity(
         "exp": issued_at + ttl_seconds, "jti": credential_id or str(uuid.uuid4()),
         "method": method.upper(), "path": path, "operation": operation, "target": target,
     }
+    if placement is not None:
+        if not isinstance(placement, str) or not placement:
+            raise IdentityError("identity placement is invalid")
+        claims["placement"] = placement
     encoded_header = _encode(json.dumps(header, sort_keys=True, separators=(",", ":")).encode())
     encoded_claims = _encode(json.dumps(claims, sort_keys=True, separators=(",", ":")).encode())
     signed = f"{encoded_header}.{encoded_claims}".encode()
@@ -205,6 +210,8 @@ def verify_external_identity(
         raise IdentityError("credential is not bound to this request")
     if not all(isinstance(claims[key], str) and claims[key] for key in ("sub", "jti", "operation", "target")):
         raise IdentityError("credential string claims are invalid")
+    if "placement" in claims and (not isinstance(claims["placement"], str) or not claims["placement"]):
+        raise IdentityError("credential placement is invalid")
     current = int(time.time()) if now is None else now
     if not isinstance(claims["iat"], int) or not isinstance(claims["exp"], int):
         raise IdentityError("credential timestamps are invalid")

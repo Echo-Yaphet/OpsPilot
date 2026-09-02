@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: opspilot
+resources:
+  - namespace.yaml
+  - placement-config.yaml
+  - shared-audit.yaml
+  - control-plane.yaml
+  - network-policies.yaml
+  - overlays/redis
+  - overlays/mysql
+  - overlays/user-service
+  - overlays/order-service
+  - overlays/payment-service

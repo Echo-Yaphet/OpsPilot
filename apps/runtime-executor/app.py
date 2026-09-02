@@ -1,12 +1,10 @@
 import os
-import sqlite3
-import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from workload_identity import IdentityError, verify_external_identity
+from runtime_store import ReplayError, RuntimeStore
 
 
 STATUS_TARGETS = frozenset({
@@ -23,47 +21,36 @@ IDENTITY_PUBLIC_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PUBLIC_KEY_FILE", "/iden
 IDENTITY_AUDIENCE = os.getenv("RUNTIME_EXECUTOR_IDENTITY_AUDIENCE", "opspilot-runtime-executor")
 IDENTITY_MAX_TTL_SECONDS = int(os.getenv("RUNTIME_EXECUTOR_IDENTITY_MAX_TTL_SECONDS", "15"))
 DATABASE_PATH = os.getenv("RUNTIME_EXECUTOR_DATABASE_PATH", "/data/runtime-executor.db")
+DATABASE_URL = os.getenv("RUNTIME_EXECUTOR_DATABASE_URL", "")
 ACTUATOR_ROOT = Path(os.getenv("RUNTIME_ACTUATOR_ROOT", "/run/actuators"))
+PLACEMENT = os.getenv("RUNTIME_EXECUTOR_PLACEMENT", "local-compose")
+EXECUTOR_ID = os.getenv("RUNTIME_EXECUTOR_ID", "runtime-executor-local")
 
 
-def initialize_database() -> None:
-    Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(DATABASE_PATH) as db:
-        db.execute("""CREATE TABLE IF NOT EXISTS consumed_credentials (
-            credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
-            expires_at INTEGER NOT NULL, consumed_at INTEGER NOT NULL
-        )""")
-        db.execute("""CREATE TABLE IF NOT EXISTS runtime_audit (
-            id INTEGER PRIMARY KEY, operation TEXT NOT NULL, target TEXT NOT NULL,
-            outcome TEXT NOT NULL, detail TEXT NOT NULL, identity_subject TEXT,
-            credential_id TEXT, identity_key_id TEXT, created_at TEXT NOT NULL
-        )""")
+def load_targets() -> frozenset[str]:
+    raw = os.getenv("RUNTIME_EXECUTOR_TARGETS", "")
+    targets = frozenset(item.strip() for item in raw.split(",") if item.strip())
+    if targets and not targets.issubset(ACTUATOR_TARGETS):
+        raise ValueError("RUNTIME_EXECUTOR_TARGETS contains a non-actuator target")
+    return targets or ACTUATOR_TARGETS
+
+
+LOCAL_TARGETS = load_targets()
+STORE = RuntimeStore(database_path=DATABASE_PATH, database_url=DATABASE_URL)
 
 
 def consume_identity(identity: dict) -> None:
-    now = int(time.time())
     try:
-        with sqlite3.connect(DATABASE_PATH) as db:
-            db.execute("DELETE FROM consumed_credentials WHERE expires_at < ?", (now - 60,))
-            db.execute(
-                "INSERT INTO consumed_credentials VALUES(?,?,?,?)",
-                (identity["jti"], identity["sub"], identity["exp"], now),
-            )
-    except sqlite3.IntegrityError as exc:
+        STORE.consume(identity, placement=PLACEMENT, executor_id=EXECUTOR_ID)
+    except ReplayError as exc:
         raise IdentityError("credential has already been used") from exc
 
 
 def audit(operation: str, target: str, outcome: str, detail: str, identity: dict) -> None:
-    with sqlite3.connect(DATABASE_PATH) as db:
-        db.execute(
-            """INSERT INTO runtime_audit(
-                operation,target,outcome,detail,identity_subject,credential_id,identity_key_id,created_at
-            ) VALUES(?,?,?,?,?,?,?,?)""",
-            (
-                operation, target, outcome, detail, identity.get("sub"), identity.get("jti"),
-                identity.get("key_id"), datetime.now(timezone.utc).isoformat(),
-            ),
-        )
+    STORE.audit(
+        operation, target, outcome, detail, identity,
+        placement=PLACEMENT, executor_id=EXECUTOR_ID,
+    )
 
 
 def request_operation(request: Request) -> str | None:
@@ -87,6 +74,8 @@ def authorize(request: Request, authorization: str | None = Header(None)) -> dic
         )
         if identity["operation"] != operation or identity["target"] != target:
             raise IdentityError("credential action claims do not match request")
+        if identity.get("placement") != PLACEMENT:
+            raise IdentityError("credential placement does not match this executor")
         expected_subject = "container-metrics-exporter" if operation == "container_stats" else "executor-gateway"
         if identity["sub"] != expected_subject:
             raise IdentityError("credential workload subject is not authorized")
@@ -97,7 +86,7 @@ def authorize(request: Request, authorization: str | None = Header(None)) -> dic
 
 
 def require_target(target: str, allowed: frozenset[str], operation: str) -> None:
-    if target not in allowed:
+    if target not in allowed or (target in ACTUATOR_TARGETS and target not in LOCAL_TARGETS):
         raise HTTPException(status_code=403, detail=f"{operation} target is not allowlisted: {target}")
 
 
@@ -118,18 +107,21 @@ async def actuator_request(target: str, method: str, path: str) -> dict:
 
 
 app = FastAPI(title="OpsPilot OS-Isolated Runtime Executor", version="0.1.0")
-initialize_database()
 
 
 @app.get("/health")
 async def health():
-    available = sum((ACTUATOR_ROOT / target / "actuator.sock").exists() for target in ACTUATOR_TARGETS)
-    return {"status": "ok" if available == len(ACTUATOR_TARGETS) else "degraded", "service": "opspilot-runtime-executor", "actuators": available}
+    available = sum((ACTUATOR_ROOT / target / "actuator.sock").exists() for target in LOCAL_TARGETS)
+    return {
+        "status": "ok" if available == len(LOCAL_TARGETS) else "degraded",
+        "service": "opspilot-runtime-executor", "actuators": available,
+        "placement": PLACEMENT, "executor_id": EXECUTOR_ID, "shared_store": STORE.shared,
+    }
 
 
 @app.get("/metrics")
 async def metrics():
-    available = sum((ACTUATOR_ROOT / target / "actuator.sock").exists() for target in ACTUATOR_TARGETS)
+    available = sum((ACTUATOR_ROOT / target / "actuator.sock").exists() for target in LOCAL_TARGETS)
     body = (
         "# HELP runtime_executor_actuators_available OS-isolated target actuators with a ready Unix socket.\n"
         "# TYPE runtime_executor_actuators_available gauge\n"

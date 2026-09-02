@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: runtime-placement-ingress}
+spec:
+  podSelector:
+    matchLabels: {opspilot.io/runtime-placement: "true"}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {opspilot.io/runtime-client: "true"}
+      ports: [{protocol: TCP, port: 2375}]
+    - from:
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 6379}
+        - {protocol: TCP, port: 3306}
+        - {protocol: TCP, port: 8001}
+        - {protocol: TCP, port: 8002}
+        - {protocol: TCP, port: 8003}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: runtime-audit-ingress}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: runtime-audit-db}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {opspilot.io/runtime-placement: "true"}
+      ports: [{protocol: TCP, port: 5432}]

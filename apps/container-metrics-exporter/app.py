@@ -16,6 +16,36 @@ WORKLOAD_PRIVATE_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PRIVATE_KEY_FILE", "/id
 RUNTIME_AUDIENCE = os.getenv("RUNTIME_EXECUTOR_IDENTITY_AUDIENCE", "opspilot-runtime-executor")
 
 
+def load_runtime_placements() -> dict[str, dict[str, str]]:
+    raw = os.getenv("RUNTIME_EXECUTOR_PLACEMENTS", "")
+    if not raw:
+        return {}
+    try:
+        placements = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError("RUNTIME_EXECUTOR_PLACEMENTS must be valid JSON") from exc
+    if not isinstance(placements, dict):
+        raise ValueError("RUNTIME_EXECUTOR_PLACEMENTS must be a JSON object")
+    validated = {}
+    for target, route in placements.items():
+        if not isinstance(route, dict) or set(route) != {"url", "placement"}:
+            raise ValueError(f"runtime placement for {target} must contain url and placement")
+        if not all(isinstance(route[key], str) and route[key] for key in ("url", "placement")):
+            raise ValueError(f"runtime placement for {target} is invalid")
+        validated[target] = route
+    return validated
+
+
+RUNTIME_PLACEMENTS = load_runtime_placements()
+
+
+def runtime_route(target: str) -> tuple[str, str]:
+    route = RUNTIME_PLACEMENTS.get(target)
+    if route:
+        return route["url"].rstrip("/"), route["placement"]
+    return RUNTIME_EXECUTOR_URL, "local-compose"
+
+
 def load_targets() -> tuple[str, ...]:
     targets = tuple(filter(None, (
         item.strip() for item in os.getenv(
@@ -52,6 +82,9 @@ def load_cpu_thresholds(targets: tuple[str, ...]) -> dict[str, float]:
 
 
 TARGETS = load_targets()
+if os.getenv("RUNTIME_EXECUTOR_PLACEMENTS_REQUIRED", "false").lower() == "true":
+    if set(RUNTIME_PLACEMENTS) != set(TARGETS):
+        raise ValueError("RUNTIME_EXECUTOR_PLACEMENTS must configure every metrics target")
 CPU_THRESHOLDS = load_cpu_thresholds(TARGETS)
 LAST_SUCCESS_TIMESTAMPS = {target: 0.0 for target in TARGETS}
 
@@ -66,15 +99,17 @@ def cpu_usage_ratio(stats: dict) -> float:
 
 async def collect_target_stats(target: str) -> dict:
     path = f"/v1/containers/{target}/stats"
+    runtime_url, placement = runtime_route(target)
     credential = await request_identity(
         ISSUER_URL, WORKLOAD_PRIVATE_KEY_FILE, "container-metrics-exporter",
         audience=RUNTIME_AUDIENCE, ttl_seconds=10, method="GET", path=path,
         operation="container_stats", target=target,
+        placement=placement,
     )
     headers = {"Authorization": f"Bearer {credential}"}
     async with httpx.AsyncClient(timeout=8) as client:
         response = await client.get(
-            f"{RUNTIME_EXECUTOR_URL}{path}", headers=headers
+            f"{runtime_url}{path}", headers=headers
         )
     response.raise_for_status()
     return response.json()
