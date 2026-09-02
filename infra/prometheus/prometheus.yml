@@ -19,10 +19,10 @@ scrape_configs:
     metrics_path: /metrics
     static_configs:
       - targets: [container-metrics-exporter:9101]
-  - job_name: docker-proxy
+  - job_name: runtime-executor
     metrics_path: /metrics
     static_configs:
-      - targets: [docker-proxy:2375]
+      - targets: [runtime-executor:2375]
   - job_name: promtail
     metrics_path: /metrics
     static_configs:

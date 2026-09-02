@@ -46,5 +46,4 @@ fault-mysql:
 	./scripts/faults/mysql-down.sh
 
 recover:
-	docker compose start redis mysql
-	docker compose restart payment-service
+	./scripts/recover-runtime-dependencies.sh

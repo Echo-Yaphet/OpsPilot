@@ -57,6 +57,7 @@ services:
 
   user-service:
     <<: *service-common
+    pid: service:runtime-actuator-user
     build:
       context: .
       dockerfile: apps/user-service/Dockerfile
@@ -74,6 +75,7 @@ services:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
       promtail: {condition: service_started}
+      runtime-actuator-user: {condition: service_started}
     logging:
       driver: syslog
       options:
@@ -87,6 +89,7 @@ services:
 
   order-service:
     <<: *service-common
+    pid: service:runtime-actuator-order
     build:
       context: .
       dockerfile: apps/order-service/Dockerfile
@@ -104,6 +107,7 @@ services:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
       promtail: {condition: service_started}
+      runtime-actuator-order: {condition: service_started}
     logging:
       driver: syslog
       options:
@@ -117,6 +121,7 @@ services:
 
   payment-service:
     <<: *service-common
+    pid: service:runtime-actuator-payment
     build:
       context: .
       dockerfile: apps/payment-service/Dockerfile
@@ -134,6 +139,7 @@ services:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
       promtail: {condition: service_started}
+      runtime-actuator-payment: {condition: service_started}
     logging:
       driver: syslog
       options:
@@ -248,7 +254,7 @@ services:
       context: .
       dockerfile: apps/executor-gateway/Dockerfile
     environment:
-      DOCKER_PROXY_URL: http://docker-proxy:2375
+      RUNTIME_EXECUTOR_URL: http://runtime-executor:2375
       WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
       WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/gateway-private/private.pem
       WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
@@ -259,23 +265,117 @@ services:
       - workload-gateway-private:/identity/gateway-private:ro
       - workload-issuer-public:/identity/issuer-public:ro
     networks: [opspilot, executor-runtime]
-    depends_on: [docker-proxy, workload-identity-issuer]
+    depends_on: [runtime-executor, workload-identity-issuer]
 
-  docker-proxy:
+  runtime-executor:
     restart: unless-stopped
     build:
       context: .
-      dockerfile: apps/docker-proxy/Dockerfile
+      dockerfile: apps/runtime-executor/Dockerfile
     environment:
-      DOCKER_HOST: unix:///var/run/docker.sock
       WORKLOAD_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
-      DOCKER_PROXY_IDENTITY_DATABASE_PATH: /data/proxy-identity.db
-      DOCKER_PROXY_PROJECT: ${COMPOSE_PROJECT_NAME:-opspilot}
+      RUNTIME_EXECUTOR_DATABASE_PATH: /data/runtime-executor.db
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
       - workload-issuer-public:/identity/issuer-public:ro
-      - docker-proxy-data:/data
+      - runtime-executor-data:/data
+      - actuator-redis:/run/actuators/redis
+      - actuator-mysql:/run/actuators/mysql
+      - actuator-user:/run/actuators/user-service
+      - actuator-order:/run/actuators/order-service
+      - actuator-payment:/run/actuators/payment-service
     networks: [executor-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      - runtime-actuator-redis
+      - runtime-actuator-mysql
+      - runtime-actuator-user
+      - runtime-actuator-order
+      - runtime-actuator-payment
+
+  runtime-actuator-redis:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/runtime-actuator/Dockerfile
+    environment:
+      RUNTIME_ACTUATOR_TARGET: redis
+      RUNTIME_ACTUATOR_ALLOW_STOP: "true"
+      RUNTIME_ACTUATOR_PROCESS_MATCH: "redis-server"
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [actuator-redis:/run/opspilot]
+
+  runtime-actuator-mysql:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/runtime-actuator/Dockerfile
+    environment:
+      RUNTIME_ACTUATOR_TARGET: mysql
+      RUNTIME_ACTUATOR_ALLOW_STOP: "true"
+      RUNTIME_ACTUATOR_PROCESS_MATCH: "mysqld"
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [actuator-mysql:/run/opspilot]
+
+  runtime-actuator-user:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/runtime-actuator/Dockerfile
+    environment:
+      RUNTIME_ACTUATOR_TARGET: user-service
+      RUNTIME_ACTUATOR_PROCESS_MATCH: "/usr/local/bin/python3.11 /usr/local/bin/uvicorn app:app --host"
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [actuator-user:/run/opspilot]
+
+  runtime-actuator-order:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/runtime-actuator/Dockerfile
+    environment:
+      RUNTIME_ACTUATOR_TARGET: order-service
+      RUNTIME_ACTUATOR_PROCESS_MATCH: "/usr/local/bin/python3.11 /usr/local/bin/uvicorn app:app --host"
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [actuator-order:/run/opspilot]
+
+  runtime-actuator-payment:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: apps/runtime-actuator/Dockerfile
+    environment:
+      RUNTIME_ACTUATOR_TARGET: payment-service
+      RUNTIME_ACTUATOR_PROCESS_MATCH: "/usr/local/bin/python3.11 /usr/local/bin/uvicorn app:app --host"
+    network_mode: none
+    cap_drop: [ALL]
+    cap_add: [KILL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes: [actuator-payment:/run/opspilot]
 
   container-metrics-exporter:
     <<: *service-common
@@ -283,7 +383,7 @@ services:
       context: .
       dockerfile: apps/container-metrics-exporter/Dockerfile
     environment:
-      DOCKER_PROXY_URL: http://docker-proxy:2375
+      RUNTIME_EXECUTOR_URL: http://runtime-executor:2375
       WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
       WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/metrics-private/private.pem
       CONTAINER_METRICS_TARGETS: user-service,order-service,payment-service
@@ -291,11 +391,14 @@ services:
     networks: [opspilot, executor-runtime]
     volumes:
       - workload-metrics-private:/identity/metrics-private:ro
-    depends_on: [docker-proxy, workload-identity-issuer]
+    depends_on: [runtime-executor, workload-identity-issuer]
 
   mysql:
     <<: *service-common
+    pid: service:runtime-actuator-mysql
     image: mysql:8.4
+    entrypoint: ["/bin/sh", "/usr/local/bin/opspilot-runtime-target-init", "/usr/local/bin/docker-entrypoint.sh"]
+    command: ["mysqld"]
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: opspilot
@@ -303,21 +406,34 @@ services:
       MYSQL_PASSWORD: opspilot
     ports: ["3306:3306"]
     volumes: [mysql-data:/var/lib/mysql]
+    configs:
+      - source: runtime-target-init
+        target: /usr/local/bin/opspilot-runtime-target-init
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -proot --silent"]
       interval: 5s
       timeout: 3s
       retries: 20
+    depends_on:
+      runtime-actuator-mysql: {condition: service_started}
 
   redis:
     <<: *service-common
+    pid: service:runtime-actuator-redis
     image: redis:7.4-alpine
+    entrypoint: ["/bin/sh", "/usr/local/bin/opspilot-runtime-target-init", "/usr/local/bin/docker-entrypoint.sh"]
+    command: ["redis-server"]
     ports: ["6379:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
       timeout: 2s
       retries: 10
+    depends_on:
+      runtime-actuator-redis: {condition: service_started}
+    configs:
+      - source: runtime-target-init
+        target: /usr/local/bin/opspilot-runtime-target-init
 
   prometheus:
     <<: *service-common
@@ -377,6 +493,10 @@ networks:
   executor-runtime:
     internal: true
 
+configs:
+  runtime-target-init:
+    file: ./scripts/runtime-target-init.sh
+
 volumes:
   mysql-data: {}
   prometheus-data: {}
@@ -386,7 +506,12 @@ volumes:
   control-data: {}
   control-canary-data: {}
   executor-data: {}
-  docker-proxy-data: {}
+  runtime-executor-data: {}
+  actuator-redis: {}
+  actuator-mysql: {}
+  actuator-user: {}
+  actuator-order: {}
+  actuator-payment: {}
   workload-issuer-data: {}
   workload-issuer-private: {}
   workload-issuer-public: {}

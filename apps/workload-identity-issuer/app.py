@@ -17,8 +17,8 @@ DATABASE_PATH = os.getenv("WORKLOAD_IDENTITY_DATABASE_PATH", "/data/issuer.db")
 CLIENT_KEYS = json.loads(os.getenv("WORKLOAD_IDENTITY_CLIENT_KEYS", "{}"))
 ALLOWED_AUDIENCES = {
     "control-api": {"opspilot-executor-gateway"},
-    "executor-gateway": {"opspilot-docker-proxy"},
-    "container-metrics-exporter": {"opspilot-docker-proxy"},
+    "executor-gateway": {"opspilot-runtime-executor"},
+    "container-metrics-exporter": {"opspilot-runtime-executor"},
 }
 ALLOWED_OPERATIONS = {
     "control-api": {"container_status", "restart_container", "stop_container"},

@@ -304,7 +304,6 @@ class VerificationPolicyProvider:
 class Settings(BaseSettings):
     prometheus_url: str = "http://prometheus:9090"
     loki_url: str = "http://loki:3100"
-    docker_host: str = "unix:///var/run/docker.sock"
     executor_gateway_url: str = "http://executor-gateway:8090"
     workload_identity_issuer_url: str = "http://workload-identity-issuer:8085"
     workload_identity_private_key_file: str = "/identity/control-private/private.pem"

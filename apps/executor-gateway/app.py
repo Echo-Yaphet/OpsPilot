@@ -19,11 +19,11 @@ IDENTITY_PUBLIC_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PUBLIC_KEY_FILE", "/iden
 IDENTITY_AUDIENCE = os.getenv("EXECUTOR_IDENTITY_AUDIENCE", "opspilot-executor-gateway")
 IDENTITY_MAX_TTL_SECONDS = int(os.getenv("EXECUTOR_IDENTITY_MAX_TTL_SECONDS", "15"))
 DATABASE_PATH = os.getenv("EXECUTOR_DATABASE_PATH", "/data/executor.db")
-DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "http://docker-proxy:2375")
-DOCKER_PROXY_TIMEOUT = float(os.getenv("DOCKER_PROXY_TIMEOUT", "15"))
+RUNTIME_EXECUTOR_URL = os.getenv("RUNTIME_EXECUTOR_URL", "http://runtime-executor:2375")
+RUNTIME_EXECUTOR_TIMEOUT = float(os.getenv("RUNTIME_EXECUTOR_TIMEOUT", "15"))
 ISSUER_URL = os.getenv("WORKLOAD_IDENTITY_ISSUER_URL", "http://workload-identity-issuer:8085")
 WORKLOAD_PRIVATE_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PRIVATE_KEY_FILE", "/identity/gateway-private/private.pem")
-PROXY_AUDIENCE = os.getenv("DOCKER_PROXY_IDENTITY_AUDIENCE", "opspilot-docker-proxy")
+RUNTIME_AUDIENCE = os.getenv("RUNTIME_EXECUTOR_IDENTITY_AUDIENCE", "opspilot-runtime-executor")
 
 
 class ActionRequest(BaseModel):
@@ -108,20 +108,20 @@ def authorize(request: Request, authorization: str | None = Header(None)) -> dic
 async def runtime_request(method: str, path: str, operation: str, target: str) -> dict:
     credential = await request_identity(
         ISSUER_URL, WORKLOAD_PRIVATE_KEY_FILE, "executor-gateway",
-        audience=PROXY_AUDIENCE, ttl_seconds=10, method=method, path=path,
+        audience=RUNTIME_AUDIENCE, ttl_seconds=10, method=method, path=path,
         operation=operation, target=target,
     )
     headers = {"Authorization": f"Bearer {credential}"}
-    async with httpx.AsyncClient(timeout=DOCKER_PROXY_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=RUNTIME_EXECUTOR_TIMEOUT) as client:
         response = await client.request(
-            method, f"{DOCKER_PROXY_URL.rstrip('/')}{path}", headers=headers,
+            method, f"{RUNTIME_EXECUTOR_URL.rstrip('/')}{path}", headers=headers,
         )
     if response.is_error:
         try:
             detail = response.json().get("detail", response.text)
         except ValueError:
             detail = response.text
-        raise RuntimeError(f"restricted Docker proxy rejected request: {detail}")
+        raise RuntimeError(f"OS-isolated runtime executor rejected request: {detail}")
     return response.json()
 
 

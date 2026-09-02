@@ -69,7 +69,7 @@ def test_external_issuer_rejects_proof_replay_and_unallowed_audience(tmp_path, m
     headers = sign_issuer_request(control_private, "control-api", payload, nonce="one-use-proof")
     assert client.post("/v1/identity", json=payload, headers=headers).status_code == 200
     assert client.post("/v1/identity", json=payload, headers=headers).status_code == 401
-    payload["audience"] = "opspilot-docker-proxy"
+    payload["audience"] = "opspilot-runtime-executor"
     denied_headers = sign_issuer_request(control_private, "control-api", payload)
     assert client.post("/v1/identity", json=payload, headers=denied_headers).status_code == 403
 

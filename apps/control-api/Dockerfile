@@ -6,7 +6,8 @@ COPY apps/control-api/opspilot ./opspilot
 COPY apps/shared-identity/workload_identity.py .
 COPY apps/shared-identity/issuer_client.py .
 COPY apps/executor-gateway ./executor-gateway
-COPY apps/docker-proxy ./docker-proxy
+COPY apps/runtime-executor ./runtime-executor
+COPY apps/runtime-actuator ./runtime-actuator
 COPY apps/container-metrics-exporter ./container-metrics-exporter
 COPY apps/policy-distributor ./policy-distributor
 COPY apps/promtail ./promtail

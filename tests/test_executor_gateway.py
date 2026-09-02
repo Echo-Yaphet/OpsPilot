@@ -57,7 +57,7 @@ async def successful_runtime_request(method, path, operation, target):
 
 
 async def failed_runtime_request(method, path, operation, target):
-    raise RuntimeError("restricted Docker proxy unavailable")
+    raise RuntimeError("OS-isolated runtime executor unavailable")
 
 
 def test_gateway_requires_identity_and_rejects_unknown_target(tmp_path, monkeypatch):
@@ -97,7 +97,7 @@ def test_gateway_executes_typed_allowlisted_action_and_audits(tmp_path, monkeypa
     assert consumed == ("control-api",)
 
 
-def test_gateway_audits_restricted_proxy_failure(tmp_path, monkeypatch):
+def test_gateway_audits_runtime_executor_failure(tmp_path, monkeypatch):
     module, client = load_gateway(tmp_path, monkeypatch)
     monkeypatch.setattr(module, "runtime_request", failed_runtime_request)
 
@@ -108,10 +108,10 @@ def test_gateway_audits_restricted_proxy_failure(tmp_path, monkeypatch):
     )
 
     assert response.status_code == 502
-    assert "restricted Docker proxy unavailable" in response.json()["detail"]
+    assert "OS-isolated runtime executor unavailable" in response.json()["detail"]
     with sqlite3.connect(module.DATABASE_PATH) as db:
         row = db.execute("SELECT outcome,detail FROM execution_audit").fetchone()
-    assert row == ("failed", "restricted Docker proxy unavailable")
+    assert row == ("failed", "OS-isolated runtime executor unavailable")
 
 
 def test_gateway_rejects_expired_wrong_audience_and_mismatched_credentials(tmp_path, monkeypatch):

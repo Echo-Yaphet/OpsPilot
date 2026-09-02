@@ -4,7 +4,7 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 `故障注入 → Prometheus/Loki 取证 → RCA → 方案生成 → 安全审查 → 人工审批 → 执行 → 验证`
 
-当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。整个默认栈只有内部受限代理挂载 Docker socket；Control API 通过短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再通过隔离网络调用固定的容器状态、restart 或 stop 接口。三个业务服务现在都由 Docker logging driver 通过 mTLS RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度；Promtail 不再读取宿主 Docker JSON 日志，也不再需要 Proxy 文件发现或 positions 卷。
+当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。默认栈已完全移除 Docker socket：Control API 以短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再调用独立身份 broker；broker 只经每目标私有 Unix socket 请求无网络、只具 `CAP_KILL` 的 actuator。每个目标加入对应 actuator 拥有的 PID namespace，因此内核把执行能力限制在单一目标进程。三个业务服务继续由 Docker logging driver 通过 mTLS RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度。
 
 ## 快速启动
 
@@ -109,13 +109,13 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
 
-> 整个默认栈只有 `docker-proxy` 挂载 Docker socket。该代理位于不映射宿主端口的内部网络，只暴露白名单容器的 status、stats、restart 和 stop 固定路由；原始 Docker API 不可访问。Control API、Gateway 和指标 exporter 分别持有自己的非对称 workload proof key，向独立签发器领取最长 10 秒的 RS256 credential；签发私钥只存在于签发器卷中。Control→Gateway 与 Gateway/exporter→Proxy 的每个凭证都绑定 issuer、audience、subject、方法、路径、operation、target 和唯一 `jti`，Gateway 与 Proxy 分别持久化消费记录。Gateway 本身无 socket 和 Docker SDK，策略白名单与人工审批仍独立。user/order/payment 继续通过 mTLS RFC5424 syslog driver 转发，Promtail 不接触 CA 或客户端私钥。
+> 默认栈没有任何 Docker socket 挂载。`runtime-executor` broker 位于不映射宿主端口的内部网络，只暴露白名单 status、stats、restart 和 stop 固定路由；原始 Docker API 不存在。Control API、Gateway 和指标 exporter 分别持有自己的非对称 workload proof key，向独立签发器领取最长 10 秒的 RS256 credential。Gateway/exporter→broker 凭证绑定 issuer、audience、subject、方法、路径、operation、target 和唯一 `jti`；Gateway 与 broker 分别持久化审计和消费记录。broker 无 Docker 权限，只能写入每目标私有 Unix socket 卷；actuator 无网络、只具 `CAP_KILL`，并拥有目标加入的 PID namespace。策略白名单与人工审批仍独立。
 
 ## 外部 workload identity
 
-首次启动时，一次性 bootstrap job 在四个独立命名卷中生成签发器、Control API、Gateway 和 metrics exporter 的 RSA key pair。每个调用方只挂载自己的 proof private key；Gateway 与 Proxy 只挂载签发器 public key；只有签发器挂载 JWT signing private key。签发器验证调用方对完整领取请求的签名、时间戳和一次性 nonce，并按 subject 独立限制 audience 与 operation，随后签发请求绑定的短期 RS256 credential。
+首次启动时，一次性 bootstrap job 在四个独立命名卷中生成签发器、Control API、Gateway 和 metrics exporter 的 RSA key pair。每个调用方只挂载自己的 proof private key；Gateway 与 runtime executor 只挂载签发器 public key；只有签发器挂载 JWT signing private key。签发器验证调用方对完整领取请求的签名、时间戳和一次性 nonce，并按 subject 独立限制 audience 与 operation，随后签发请求绑定的短期 RS256 credential。
 
-签发器无宿主端口且不挂载 Docker socket。Gateway 调 Proxy 与 metrics exporter 读取 stats 均不再发送静态 shared token。签发器、Gateway 和 Proxy 的 nonce/`jti` 消费状态各自持久化；未知 workload/audience/operation、过期 proof、重复 nonce、错误签名、错误 issuer/audience/path/action/target 和重复 `jti` 都会在 Docker 访问前拒绝。生产轮换应先让验证方信任新的签发 public key，再切换签发器 signing key，最后在所有旧凭证最长 TTL 结束后移除旧信任；调用方 proof key 可按 workload 独立轮换。
+签发器无宿主端口且不挂载 Docker socket。Gateway 调 runtime executor 与 metrics exporter 读取 stats 均不发送静态 shared token。签发器、Gateway 和 runtime executor 的 nonce/`jti` 消费状态各自持久化；未知 workload/audience/operation、过期 proof、重复 nonce、错误签名、错误 issuer/audience/path/action/target 和重复 `jti` 都会在 actuator 访问前拒绝。生产轮换应先让验证方信任新的签发 public key，再切换签发器 signing key，最后在所有旧凭证最长 TTL 结束后移除旧信任；调用方 proof key 可按 workload 独立轮换。
 
 ## 其他故障场景
 
@@ -125,7 +125,7 @@ make fault-mysql   # 停止 MySQL，并触发三个服务的健康检查
 make recover       # 启动 Redis/MySQL 并重启 payment-service
 ```
 
-CPU 场景现在使用真实 Docker CPU 计数器。`container-metrics-exporter` 通过受限代理的认证 stats 路由导出 CPU 用量、采集健康、最后成功时间和生效阈值。`CONTAINER_CPU_THRESHOLDS` 必须以 JSON 对象精确配置全部采集目标，值表示主机 CPU 核数且范围为 `(0, 1024]`；默认三个业务服务均为 `0.8`：
+CPU 场景现在使用 actuator 裁剪后的真实目标进程 CPU 计数器。`container-metrics-exporter` 通过 runtime executor 的认证 stats 路由导出 CPU 用量、采集健康、最后成功时间和生效阈值。`CONTAINER_CPU_THRESHOLDS` 必须以 JSON 对象精确配置全部采集目标，值表示主机 CPU 核数且范围为 `(0, 1024]`；默认三个业务服务均为 `0.8`：
 
 ```bash
 CONTAINER_CPU_THRESHOLDS={"user-service":0.7,"order-service":0.8,"payment-service":0.9}
@@ -142,8 +142,9 @@ apps/
   dashboard/          实时运维控制台、故障演练与 Agent 时间线
   control-api/        FastAPI 控制面、状态模型、Agent 工作流、Tools
   executor-gateway/   独立执行边界、身份校验、操作白名单与审计
-  docker-proxy/       仅持有 socket 的受限容器运行时代理
-  container-metrics-exporter/  通过受限 stats 路由导出真实容器 CPU 指标
+  runtime-executor/   外部身份验证、固定路由、审计与 actuator Unix socket 分发
+  runtime-actuator/   无网络、每目标 PID namespace 与 CAP_KILL 强制边界
+  container-metrics-exporter/  通过 actuator 的裁剪 stats 路由导出真实 CPU 指标
   shared-service/     三个示例服务共享的最小实现
   user-service/       user-service 容器入口
   order-service/      order-service 容器入口
@@ -247,7 +248,7 @@ docker compose --profile policy-rollout up -d --build
 
 `GET /api/v1/verification-policy/status` 同时显示 observed 与 accepted revision/digest、加载结果、分发连通性和缓存状态。`GET /api/v1/verification-policy/rollout` 使用 `VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY`（默认 4，范围 1–32）限制并行 peer 查询，并受 `VERIFICATION_POLICY_ROLLOUT_TIMEOUT` 约束；一个节点超时或离线不会丢弃其他节点结果。响应明确给出 `desired` revision/digest，以及 `rollout_state=converged|degraded|stalled|inactive`：全部节点接受 desired 且来源正常为 `converged`，peer 或分发源部分失败为 `degraded`，节点均在线但无法接受 desired 为 `stalled`，默认未启用签名 rollout 的单节点为 `inactive`。原有 `converged`、`healthy`、在线节点数和节点详情字段仍保留；该接口不是策略写入面或分布式共识系统。
 
-Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会按显式 key ID 选择当前或尚在重叠窗口内的上一验证 key，再验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject、credential ID 和 key ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `docker-proxy` 的固定路由；Control API 不在该网络，Gateway 不再挂载 socket 或安装 Docker SDK。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
+Safety Agent 会在执行前生成 `local-compose-restart-v1` 策略决策。决策同时进入 incident evidence 和 SQLite `policy_decisions` 审计表；允许的动作以类型化 `restart_container` 和即时签发的一次性 workload credential 发送到独立 executor gateway，任意 shell 命令不会穿过该接口。Gateway 会验证凭证时效、请求绑定和 `jti` 唯一性，并把允许、拒绝和执行失败连同 workload subject、credential ID 和 key ID 写入自己的持久化 SQLite 审计库。通过验证后，Gateway 只能经专用内部网络调用 `runtime-executor` 固定路由；broker 再通过目标专属 Unix socket 请求 actuator，无法访问 Docker API 或其他 actuator。Control API 不在执行网络。显式人工审批门与策略白名单是两个独立且都必须通过的安全条件。
 
 ## 事件与持久化 API
 

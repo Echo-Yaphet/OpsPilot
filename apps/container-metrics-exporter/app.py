@@ -10,10 +10,10 @@ from fastapi import FastAPI, Response
 from issuer_client import request_identity
 
 
-DOCKER_PROXY_URL = os.getenv("DOCKER_PROXY_URL", "http://docker-proxy:2375").rstrip("/")
+RUNTIME_EXECUTOR_URL = os.getenv("RUNTIME_EXECUTOR_URL", "http://runtime-executor:2375").rstrip("/")
 ISSUER_URL = os.getenv("WORKLOAD_IDENTITY_ISSUER_URL", "http://workload-identity-issuer:8085")
 WORKLOAD_PRIVATE_KEY_FILE = os.getenv("WORKLOAD_IDENTITY_PRIVATE_KEY_FILE", "/identity/metrics-private/private.pem")
-PROXY_AUDIENCE = os.getenv("DOCKER_PROXY_IDENTITY_AUDIENCE", "opspilot-docker-proxy")
+RUNTIME_AUDIENCE = os.getenv("RUNTIME_EXECUTOR_IDENTITY_AUDIENCE", "opspilot-runtime-executor")
 
 
 def load_targets() -> tuple[str, ...]:
@@ -68,13 +68,13 @@ async def collect_target_stats(target: str) -> dict:
     path = f"/v1/containers/{target}/stats"
     credential = await request_identity(
         ISSUER_URL, WORKLOAD_PRIVATE_KEY_FILE, "container-metrics-exporter",
-        audience=PROXY_AUDIENCE, ttl_seconds=10, method="GET", path=path,
+        audience=RUNTIME_AUDIENCE, ttl_seconds=10, method="GET", path=path,
         operation="container_stats", target=target,
     )
     headers = {"Authorization": f"Bearer {credential}"}
     async with httpx.AsyncClient(timeout=8) as client:
         response = await client.get(
-            f"{DOCKER_PROXY_URL}{path}", headers=headers
+            f"{RUNTIME_EXECUTOR_URL}{path}", headers=headers
         )
     response.raise_for_status()
     return response.json()
