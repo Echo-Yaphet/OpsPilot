@@ -11,6 +11,7 @@ from workload_identity import IdentityError
 from .config import VerificationPolicyProvider, settings
 from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
+from .llm import OllamaIncidentAnalyzer
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
 from .policy_distribution import (
     VerificationPolicyPeerAuthenticator,
@@ -65,6 +66,11 @@ verification_policy_peer_authenticator = VerificationPolicyPeerAuthenticator(
     maximum_ttl_seconds=settings.verification_policy_peer_identity_ttl_seconds,
     consume=store.consume_verification_policy_peer_credential,
 )
+incident_analyzer = None
+if settings.llm_base_url and settings.llm_model:
+    incident_analyzer = OllamaIncidentAnalyzer(
+        settings.llm_base_url, settings.llm_model, settings.llm_timeout,
+    )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,
     settings.workload_identity_issuer_url,
@@ -73,7 +79,7 @@ workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_identity_audience,
     settings.executor_identity_subject,
     settings.executor_identity_ttl_seconds,
-), knowledge_retriever=knowledge_retriever,
+), knowledge_retriever=knowledge_retriever, incident_analyzer=incident_analyzer,
     default_verification_policy=settings.default_verification_policy(),
     verification_policies=settings.verification_policies(),
     verification_policy_provider=verification_policy_provider,

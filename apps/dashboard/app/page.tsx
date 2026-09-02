@@ -31,6 +31,19 @@ function timeLabel(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(value));
 }
 
+function evidenceKind(source: string) {
+  if (source === "prometheus") return "METRIC";
+  if (source === "llm_analysis") return "LOCAL LLM";
+  if (source === "loki") return "LOG";
+  return "EVIDENCE";
+}
+
+function llmRationale(item: Evidence) {
+  if (item.source !== "llm_analysis" || typeof item.data !== "object" || item.data === null) return null;
+  const rationale = (item.data as Record<string, unknown>).rationale;
+  return typeof rationale === "string" ? rationale : null;
+}
+
 function Signal({ healthy }: { healthy: boolean }) {
   return <span className={`signal ${healthy ? "healthy" : "critical"}`} aria-label={healthy ? "正常" : "异常"} />;
 }
@@ -219,7 +232,10 @@ export default function Dashboard() {
                   <div className="section-title"><span>证据链</span><small>{incident.evidence.length} 个来源</small></div>
                   <div className="evidence-grid">
                     {incident.evidence.map((item) => (
-                      <div className="evidence-card" key={item.source}><span>{item.source === "prometheus" ? "METRIC" : "LOG"}</span><strong>{item.source}</strong><p>{item.summary}</p></div>
+                      <div className="evidence-card" key={item.source}>
+                        <span>{evidenceKind(item.source)}</span><strong>{item.source}</strong>
+                        <p>{item.summary}</p>{llmRationale(item) && <p>{llmRationale(item)}</p>}
+                      </div>
                     ))}
                   </div>
 

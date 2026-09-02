@@ -6,6 +6,7 @@ import pytest
 from opspilot.models import AnalyzeRequest
 from opspilot.config import VerificationPolicy
 from opspilot.execution import ExecutionPolicy
+from opspilot.llm import LLMAnalysis
 from opspilot.tools import OpsTools
 from opspilot.workflow import IncidentWorkflow
 from opspilot.storage import IncidentStore
@@ -110,6 +111,26 @@ class FailedExecutor:
         raise RuntimeError("executor gateway timed out")
 
 
+class FakeIncidentAnalyzer:
+    name = "ollama/test-model"
+
+    def __init__(self, analysis=None, error=None):
+        self.analysis = analysis or LLMAnalysis(
+            root_cause="Redis connection failure confirmed by dependency metric",
+            confidence=0.97,
+            rationale="The Redis dependency metric is zero and the error log reports a failed connection.",
+            recommendation_title="Restore Redis and verify payment-service dependencies",
+        )
+        self.error = error
+        self.context = None
+
+    async def analyze(self, **context):
+        self.context = context
+        if self.error:
+            raise self.error
+        return self.analysis
+
+
 @pytest.mark.asyncio
 async def test_redis_failure_produces_safe_recommendation():
     state = await IncidentWorkflow(FakeTools()).run(AnalyzeRequest())
@@ -118,6 +139,53 @@ async def test_redis_failure_produces_safe_recommendation():
     assert state.status == "recommendation_ready"
     assert state.recommendations[0].requires_approval is True
     assert "restart redis" in state.recommendations[0].command
+
+
+@pytest.mark.asyncio
+async def test_llm_enriches_known_rca_without_replacing_safe_target_or_command():
+    analyzer = FakeIncidentAnalyzer()
+    state = await IncidentWorkflow(FakeTools(), incident_analyzer=analyzer).run(AnalyzeRequest())
+
+    assert state.root_cause == "Redis dependency is unavailable"
+    assert state.confidence == pytest.approx(0.92)
+    assert state.recommendations[0].title == analyzer.analysis.recommendation_title
+    assert state.recommendations[0].command == "docker compose restart redis"
+    evidence = next(item for item in state.evidence if item.source == "llm_analysis")
+    assert evidence.data["model"] == "ollama/test-model"
+    assert evidence.data["used_for_state"] is False
+    assert analyzer.context["deterministic_root_cause"] == "Redis dependency is unavailable"
+
+
+@pytest.mark.asyncio
+async def test_llm_can_refine_inconclusive_rca_without_becoming_trusted_execution_input():
+    analysis = LLMAnalysis(
+        root_cause="Application request saturation suspected",
+        confidence=0.95,
+        rationale="No dependency failure is visible; application saturation remains a hypothesis.",
+        recommendation_title="Inspect payment-service saturation before recovery",
+    )
+    state = await IncidentWorkflow(
+        InconclusiveTools(), incident_analyzer=FakeIncidentAnalyzer(analysis=analysis),
+    ).run(AnalyzeRequest())
+
+    assert state.root_cause == analysis.root_cause
+    assert state.confidence == pytest.approx(0.79)
+    assert state.recommendations[0].command == "docker compose restart payment-service"
+    evidence = next(item for item in state.evidence if item.source == "llm_analysis")
+    assert evidence.data["used_for_state"] is True
+
+
+@pytest.mark.asyncio
+async def test_llm_failure_falls_back_to_deterministic_rca():
+    state = await IncidentWorkflow(
+        FakeTools(), incident_analyzer=FakeIncidentAnalyzer(error=RuntimeError("model unavailable")),
+    ).run(AnalyzeRequest())
+
+    assert state.root_cause == "Redis dependency is unavailable"
+    assert state.recommendations[0].command == "docker compose restart redis"
+    evidence = next(item for item in state.evidence if item.source == "llm_analysis")
+    assert evidence.summary == "local LLM unavailable; deterministic RCA retained"
+    assert evidence.data["error"] == "model unavailable"
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-02 (orchestrator-native workload placement and shared runtime audit milestone)
+Last updated: 2026-09-02 (local Ollama-assisted RCA milestone)
 
 ## Continue from here
 
@@ -104,6 +104,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Semantic matches supplement rather than displace exact deterministic results; deterministic scores and ordering remain intact.
 - Missing configuration, endpoint failures, timeouts, malformed vector counts, and invalid dimensions fail open to SQLite deterministic retrieval.
 - The local MVP starts and tests without an embedding model, service, or API key.
+- An optional local Ollama analyzer consumes bounded incident evidence and returns a strict structured RCA candidate, rationale, confidence, and non-executable recommendation title. Known deterministic failure signatures, target selection, commands, policy, approval, and execution remain outside model control.
+- Ollama failures and malformed output fail open to deterministic RCA. Inconclusive model candidates are capped below the trusted conclusion threshold, and model provenance plus rationale are retained in the existing evidence shape.
 - Alertmanager firing analysis carries its original `startsAt` into an internal evidence context without changing `AnalyzeRequest`'s public schema; manual analysis uses its request start time.
 - Prometheus dependency queries are evaluated at the incident time, while Loki queries are bounded to two minutes before through five minutes after the incident (and never beyond the current time).
 - A new `incident_context` evidence record exposes the origin, incident timestamp, source query windows/modes, and result counts while preserving existing Prometheus/Loki list-shaped evidence data.
@@ -130,6 +132,13 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the local Ollama-assisted RCA milestone:
+
+- The rebuilt current-source suite passed 112 backend tests with the existing single LangGraph deprecation warning. Coverage proves successful enrichment, inconclusive-candidate confidence capping, deterministic target/command ownership, configuration validation, and model-failure fallback.
+- The rebuilt Control API reached host Ollama 0.32.5 and used the installed `gemma3:latest` 4.3B model. A live no-fault analysis persisted structured `llm_analysis` evidence and a model-authored recommendation title while remaining `recommendation_ready`.
+- A real Redis outage retained the deterministic `Redis dependency is unavailable` root cause and `docker compose restart redis` command while Ollama added its rationale and `Restart Redis Dependency` title. Recommendation-only incident `cd1468f4-3718-4910-a99a-1fbeeba037d5` did not execute; explicit approval then produced incident `81ac96be-ce40-4a46-86dd-fabb172978d0`, `resolved`, `execution_result="restarted redis"`, and `verified=true` after two checks.
+- The model never receives an execution tool and cannot select a target or command. Existing policy allowlists, approval, workload identity, replay prevention, actuator isolation, and Verification boundaries remain unchanged.
 
 Latest verification for the orchestrator-native placement and shared runtime audit milestone:
 
@@ -503,7 +512,7 @@ Local entry points:
 
 ## Current limitations
 
-- LangGraph now provides the orchestration and checkpointed state; RCA and remediation policies remain deterministic and no LLM is connected yet.
+- LangGraph provides orchestration and checkpointed state. A local Ollama model now assists RCA explanations and recommendation wording, while deterministic rules remain authoritative for known signatures, targets, commands, policy, approval, and execution.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
@@ -703,6 +712,13 @@ Local entry points:
 - Added a shared PostgreSQL replay/audit backend with atomic cross-instance uniqueness, placement/executor attribution, and race-safe concurrent bootstrap while retaining default SQLite compatibility.
 - Added a five-target Kubernetes Kustomize runtime plane with shared process namespaces, per-workload persistent actuator state, no ServiceAccount tokens, least-privilege security contexts, runtime NetworkPolicies, and an external Secret contract.
 - Revalidated live two-broker shared replay denial, default identity boundaries, the rebuilt 21-service Compose stack, CPU recommendation-only behavior, and Redis recommendation → approval block → approved verified recovery.
+
+### Completed: local Ollama-assisted RCA
+
+- Added an optional Ollama adapter with strict structured output and bounded, injection-aware evidence context.
+- Added model provenance and rationale to the existing evidence format; the Dashboard identifies local-LLM evidence and displays its rationale.
+- Kept deterministic signatures authoritative and retained deterministic target/command generation, independent policy and approval gates, recommendation-only defaults, identity, replay, actuator, and Verification boundaries.
+- Revalidated model success, failure fallback, a no-fault analysis, and the real Redis recommendation → approved verified recovery path with `gemma3:latest`.
 
 ### Then: knowledge and further production safety
 

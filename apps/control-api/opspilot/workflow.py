@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from .config import VerificationPolicy
 from .execution import ExecutionPolicy, Executor, PolicyDecision, RestrictedExecutor
 from .knowledge import KnowledgeRetriever, NoopKnowledgeRetriever
+from .llm import IncidentAnalyzer, LLMAnalysis
 from .models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
 from .tools import OpsTools
 
@@ -25,6 +26,7 @@ class WorkflowState(TypedDict):
     cpu_metrics: list[dict]
     logs: list[str]
     target: str
+    llm_analysis: LLMAnalysis | None
     policy_decision: PolicyDecision | None
     evidence_context: dict
 
@@ -40,6 +42,7 @@ class IncidentWorkflow:
         execution_policy: ExecutionPolicy | None = None,
         executor: Executor | None = None,
         knowledge_retriever: KnowledgeRetriever | None = None,
+        incident_analyzer: IncidentAnalyzer | None = None,
         verification_policies: Mapping[str, VerificationPolicy] | None = None,
         default_verification_policy: VerificationPolicy | None = None,
         verification_policy_provider: VerificationPolicyResolver | None = None,
@@ -58,6 +61,7 @@ class IncidentWorkflow:
         self.execution_policy = execution_policy or ExecutionPolicy()
         self.executor = executor or RestrictedExecutor(tools)
         self.knowledge_retriever = knowledge_retriever or NoopKnowledgeRetriever()
+        self.incident_analyzer = incident_analyzer
         self.graph = self._build_graph()
 
     def event(self, state: IncidentState, agent: AgentName, message: str) -> None:
@@ -227,8 +231,50 @@ class IncidentWorkflow:
             source="incident_history", summary="similar historical incident retrieval",
             data=[item.model_dump(mode="json") for item in history],
         ))
+        llm_analysis = None
+        if self.incident_analyzer is not None:
+            baseline_root_cause = state.root_cause
+            baseline_confidence = state.confidence
+            try:
+                llm_analysis = await self.incident_analyzer.analyze(
+                    service=request.service,
+                    symptom=request.symptom,
+                    metrics=metrics,
+                    cpu_metrics=graph_state["cpu_metrics"],
+                    logs=logs,
+                    deterministic_root_cause=baseline_root_cause,
+                    deterministic_confidence=baseline_confidence,
+                    runbooks=[item.model_dump(mode="json") for item in runbooks],
+                    incident_history=[item.model_dump(mode="json") for item in history],
+                )
+                # Known failure signatures remain authoritative. For an inconclusive
+                # baseline, the model may improve the user-facing candidate but cannot
+                # promote it into an automatically trusted conclusion.
+                used_for_state = baseline_confidence < 0.8
+                if used_for_state:
+                    state.root_cause = llm_analysis.root_cause
+                    state.confidence = min(llm_analysis.confidence, 0.79)
+                state.evidence.append(Evidence(
+                    source="llm_analysis",
+                    summary=f"local LLM-assisted RCA from {self.incident_analyzer.name}",
+                    data={
+                        **llm_analysis.model_dump(mode="json"),
+                        "model": self.incident_analyzer.name,
+                        "used_for_state": used_for_state,
+                        "deterministic_baseline": {
+                            "root_cause": baseline_root_cause,
+                            "confidence": baseline_confidence,
+                        },
+                    },
+                ))
+            except Exception as exc:
+                state.evidence.append(Evidence(
+                    source="llm_analysis",
+                    summary="local LLM unavailable; deterministic RCA retained",
+                    data={"model": self.incident_analyzer.name, "error": str(exc)[:500]},
+                ))
         self.event(state, AgentName.RCA, f"Root cause: {state.root_cause} ({state.confidence:.0%})")
-        return {"incident": state, "target": target}
+        return {"incident": state, "target": target, "llm_analysis": llm_analysis}
 
     def _route_after_rca(self, graph_state: WorkflowState) -> Literal["conclusive", "insufficient_evidence"]:
         return "conclusive" if graph_state["incident"].confidence >= 0.8 else "insufficient_evidence"
@@ -240,7 +286,10 @@ class IncidentWorkflow:
         command = matched_runbook.get("command") if matched_runbook else None
         if command is None:
             command = f"docker compose restart {target}"
-        title = matched_runbook.get("title") if matched_runbook else None
+        llm_analysis = graph_state.get("llm_analysis")
+        title = llm_analysis.recommendation_title if llm_analysis else None
+        if title is None:
+            title = matched_runbook.get("title") if matched_runbook else None
         if title is None and state.root_cause == "Container CPU usage is high":
             title = f"Restart {target} and verify container CPU usage"
         state.recommendations.append(Recommendation(
@@ -435,6 +484,7 @@ class IncidentWorkflow:
                 "cpu_metrics": [],
                 "logs": [],
                 "target": request.service,
+                "llm_analysis": None,
                 "policy_decision": None,
                 "evidence_context": evidence_context,
             },

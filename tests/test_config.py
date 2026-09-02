@@ -52,6 +52,22 @@ def test_invalid_workload_identity_issuer_url_is_rejected(url):
         Settings(workload_identity_issuer_url=url)
 
 
+def test_local_llm_configuration_requires_url_and_model_together(monkeypatch):
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    with pytest.raises(ValidationError):
+        Settings(llm_base_url="http://host.docker.internal:11434")
+    with pytest.raises(ValidationError):
+        Settings(llm_model="gemma3:latest")
+    with pytest.raises(ValidationError):
+        Settings(llm_base_url="ollama:11434", llm_model="gemma3:latest")
+
+    settings = Settings(
+        llm_base_url="http://host.docker.internal:11434", llm_model="gemma3:latest",
+    )
+    assert settings.llm_model == "gemma3:latest"
+
+
 @pytest.mark.parametrize("kwargs", [
     {"verification_policy_peer_identity_key": ""},
     {"verification_policy_peer_identity_key_id": "bad key"},

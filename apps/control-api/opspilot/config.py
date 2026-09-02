@@ -317,6 +317,9 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_timeout: float = 10
     semantic_minimum_similarity: float = 0.75
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_timeout: float = Field(default=90, gt=0, le=300)
     verification_max_attempts: int = Field(default=6, ge=1, le=60)
     verification_check_interval_seconds: float = Field(default=2, ge=0, le=300)
     verification_service_health_condition: Literal["healthy", "status_ok"] = "healthy"
@@ -350,6 +353,10 @@ class Settings(BaseSettings):
             raise ValueError("workload identity private key file must not be empty")
         if not 1 <= self.executor_identity_ttl_seconds <= 60:
             raise ValueError("executor identity TTL must be between 1 and 60 seconds")
+        if bool(self.llm_base_url) != bool(self.llm_model):
+            raise ValueError("LLM base URL and model must be configured together")
+        if self.llm_base_url and not self.llm_base_url.startswith(("http://", "https://")):
+            raise ValueError("LLM base URL must be HTTP(S)")
         default = self.default_verification_policy()
         for service, override in self.verification_service_policies.items():
             if not service.strip():
