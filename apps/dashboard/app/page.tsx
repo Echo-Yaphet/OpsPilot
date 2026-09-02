@@ -33,15 +33,22 @@ function timeLabel(value: string) {
 
 function evidenceKind(source: string) {
   if (source === "prometheus") return "METRIC";
-  if (source === "llm_analysis") return "LOCAL LLM";
+  if (source.startsWith("llm_")) return "LOCAL LLM";
   if (source === "loki") return "LOG";
   return "EVIDENCE";
 }
 
-function llmRationale(item: Evidence) {
-  if (item.source !== "llm_analysis" || typeof item.data !== "object" || item.data === null) return null;
-  const rationale = (item.data as Record<string, unknown>).rationale;
-  return typeof rationale === "string" ? rationale : null;
+function llmDetail(item: Evidence) {
+  if (!item.source.startsWith("llm_") || typeof item.data !== "object" || item.data === null) return null;
+  const data = item.data as Record<string, unknown>;
+  if (typeof data.rationale === "string") return data.rationale;
+  if (typeof data.summary === "string") return data.summary;
+  if (Array.isArray(data.steps)) return data.steps.filter((step) => typeof step === "string").join(" · ");
+  if (typeof data.plan === "object" && data.plan !== null) {
+    const rationale = (data.plan as Record<string, unknown>).rationale;
+    if (typeof rationale === "string") return rationale;
+  }
+  return null;
 }
 
 function Signal({ healthy }: { healthy: boolean }) {
@@ -234,7 +241,7 @@ export default function Dashboard() {
                     {incident.evidence.map((item) => (
                       <div className="evidence-card" key={item.source}>
                         <span>{evidenceKind(item.source)}</span><strong>{item.source}</strong>
-                        <p>{item.summary}</p>{llmRationale(item) && <p>{llmRationale(item)}</p>}
+                        <p>{item.summary}</p>{llmDetail(item) && <p>{llmDetail(item)}</p>}
                       </div>
                     ))}
                   </div>

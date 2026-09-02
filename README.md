@@ -174,23 +174,23 @@ tests/                Agent 闭环与安全门测试
 
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。
 
-当前 `IncidentWorkflow.run()` 是稳定入口，内部使用真实 LangGraph `StateGraph` 编排八个 Agent 节点。默认仍可用确定性 RCA 与修复策略在无模型环境完成验收；配置本地 Ollama 后，RCA 节点会增加结构化模型分析，Solution 节点采用模型生成的非执行性建议标题。HTTP 接口、工具 seam 和状态模型保持不变。
+当前 `IncidentWorkflow.run()` 是稳定入口，内部使用真实 LangGraph `StateGraph` 编排八个 Agent 节点。默认仍可用确定性 RCA 与修复策略在无模型环境完成验收；配置本地 Ollama 后，Coordinator 会生成有界调查计划并从固定目录中选择额外只读探针，RCA 会生成最多三个带支持/反对证据的候选，Solution 会生成非执行性处置步骤，Verification 会解释确定性验证结果。HTTP 接口、工具 seam 和状态模型保持不变。
 
 RCA 完成初步判断后会通过独立的知识检索 seam 查询 SQLite 中的确定性 runbook 和同服务、同根因的历史 incident。检索 seam 使用稳定的类型化结果；写入 `runbook` 和 `incident_history` evidence 时仍序列化为原有字典结构，不增加或改变 `IncidentState` 字段。每个结果包含总分和 `score_explanation` 因子，历史记录优先采用已验证且已解决的结果。Solution 优先使用精确命中的 runbook 标题和类型化策略可校验的命令。当前内置 Redis、MySQL 和服务降级三份基础 runbook，并用离线 Redis/MySQL fixtures 锁定基础命中，为后续语义 RAG 保留可评估的替换边界。
 
 可选语义排序层现已位于同一 seam 后方。默认不配置模型时仍只使用 SQLite 确定性检索；配置 OpenAI-compatible embedding endpoint 后，语义结果只补充确定性结果，精确命中的顺序和原有数字分数不会被降低。embedding 服务超时、报错或返回异常数据时会自动回退，不影响 Control API 启动和分析。可选环境变量为 `EMBEDDING_BASE_URL`、`EMBEDDING_MODEL`、`EMBEDDING_API_KEY`、`EMBEDDING_TIMEOUT` 和 `SEMANTIC_MINIMUM_SIMILARITY`。语义命中仍只影响 RCA/Solution evidence 与建议，执行必须继续通过策略和人工审批门。
 
-本地 LLM 通过可选 Ollama adapter 接入。模型只接收有界的指标、CPU、错误日志、Runbook 和历史 Incident 上下文，并返回严格校验的 `root_cause`、`confidence`、`rationale` 与 `recommendation_title`；日志和历史文本在 prompt 中被明确视为不可信数据。已知故障的确定性根因、执行 target 和命令不会被模型覆盖；证据不足时，模型候选置信度最高限制为 `0.79`。超时、连接失败、空响应或 schema 错误会记录 `llm_analysis` 降级证据并继续确定性流程。
+本地 LLM 通过可选 Ollama adapter 接入。模型只接收有界且去除 Prometheus 时间戳的指标、CPU、错误日志、Runbook 和历史 Incident 上下文，并通过严格 schema 返回调查计划、RCA 候选、解释、知识查询扩展与非执行性处置步骤；日志、症状和历史文本在 prompt 中被明确视为不可信数据。Coordinator 只能选择 `service_health`、`container_status`，Prometheus、CPU 和 Loki 仍是强制基线，任何副作用工具名都会被 schema 拒绝。已知故障的确定性根因、执行 target 和命令不会被模型覆盖；证据不足时，模型候选置信度最高限制为 `0.79`。每个模型阶段的超时、连接失败、空响应或 schema 错误都会记录独立降级证据并继续确定性流程。
 
 Docker Compose 中可使用宿主机 Ollama：
 
 ```bash
 LLM_BASE_URL=http://host.docker.internal:11434
-LLM_MODEL=gemma3:latest
+LLM_MODEL=qwen2.5:1.5b
 LLM_TIMEOUT=90
 ```
 
-模型输出会作为 `llm_analysis` evidence 显示在 Dashboard，模型只能改善 RCA 解释和建议标题；固定操作、策略白名单、风险分级、人工审批、runtime identity、防重放和 Verification 均保持在模型边界之外。
+`qwen2.5:1.5b` 是当前本机演示默认值；更大的模型可直接通过 `LLM_MODEL` 替换，但需要按硬件调整超时。`llm_investigation`、`llm_analysis`、`llm_solution`、`llm_verification` 会作为 `LOCAL LLM` evidence 显示在 Dashboard。模型可参与调查、分析、知识查询扩展、方案表达和结果解释，但固定操作、策略白名单、风险分级、人工审批、runtime identity、防重放以及 `verified` 判定均保持在模型边界之外。
 
 Prometheus、Loki 和 Alertmanager 取证现共享事故时间上下文。手动分析以请求开始时间为锚点；Alertmanager firing 事件使用原始 `startsAt`。Prometheus 查询锚定事故时刻，Loki 只查询事故前两分钟至后五分钟（不超过当前时间）的窗口，减少十分钟滚动窗口内旧错误的干扰。关联范围、来源、查询模式和结果数量写入新增的 `incident_context` evidence；原有 Prometheus/Loki evidence 数据格式、`IncidentState` 和 HTTP schema 保持不变。指标仍优先于日志完成 Redis/MySQL RCA。
 

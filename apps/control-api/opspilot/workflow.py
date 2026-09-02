@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from .config import VerificationPolicy
 from .execution import ExecutionPolicy, Executor, PolicyDecision, RestrictedExecutor
 from .knowledge import KnowledgeRetriever, NoopKnowledgeRetriever
-from .llm import IncidentAnalyzer, LLMAnalysis
+from .llm import IncidentAnalyzer, InvestigationPlan, LLMAnalysis
 from .models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
 from .tools import OpsTools
 
@@ -26,6 +26,8 @@ class WorkflowState(TypedDict):
     cpu_metrics: list[dict]
     logs: list[str]
     target: str
+    investigation_plan: InvestigationPlan | None
+    tool_observations: list[dict]
     llm_analysis: LLMAnalysis | None
     policy_decision: PolicyDecision | None
     evidence_context: dict
@@ -110,9 +112,59 @@ class IncidentWorkflow:
         return builder.compile(checkpointer=InMemorySaver())
 
     async def _coordinator(self, graph_state: WorkflowState) -> dict:
-        state = graph_state["incident"]
-        self.event(state, AgentName.COORDINATOR, "Started metrics and log investigation")
-        return {"incident": state}
+        state, request = graph_state["incident"], graph_state["request"]
+        plan = None
+        observations = []
+        if self.incident_analyzer is not None:
+            try:
+                plan = await self.incident_analyzer.plan(
+                    service=request.service, symptom=request.symptom,
+                )
+                for tool_name in plan.read_only_tools:
+                    if tool_name == "service_health":
+                        try:
+                            result = await self.tools.service_health(request.service)
+                        except Exception as exc:
+                            result = {"error": str(exc)[:500]}
+                        observations.append({"tool": tool_name, "result": result})
+                    elif tool_name == "container_status":
+                        try:
+                            result = await self.tools.container_status(request.service)
+                        except Exception as exc:
+                            result = {"error": str(exc)[:500]}
+                        observations.append({"tool": tool_name, "result": result})
+                state.evidence.append(Evidence(
+                    source="llm_investigation",
+                    summary=f"bounded investigation plan from {self.incident_analyzer.name}",
+                    data={
+                        "model": self.incident_analyzer.name,
+                        "plan": plan.model_dump(mode="json"),
+                        "tool_observations": observations,
+                        "mandatory_baseline_tools": [
+                            "dependency_metrics", "cpu_metrics", "error_logs",
+                        ],
+                    },
+                ))
+                self.event(
+                    state, AgentName.COORDINATOR,
+                    f"Local LLM planned {len(plan.read_only_tools)} bounded read-only probe(s)",
+                )
+            except Exception as exc:
+                state.evidence.append(Evidence(
+                    source="llm_investigation",
+                    summary="local LLM planning unavailable; mandatory investigation retained",
+                    data={
+                        "model": self.incident_analyzer.name,
+                        "error_type": type(exc).__name__, "error": str(exc)[:500],
+                    },
+                ))
+                self.event(state, AgentName.COORDINATOR, "Started mandatory metrics and log investigation")
+        else:
+            self.event(state, AgentName.COORDINATOR, "Started metrics and log investigation")
+        return {
+            "incident": state, "investigation_plan": plan,
+            "tool_observations": observations,
+        }
 
     async def _monitor(self, graph_state: WorkflowState) -> dict:
         state, request = graph_state["incident"], graph_state["request"]
@@ -222,6 +274,14 @@ class IncidentWorkflow:
         runbooks = self.knowledge_retriever.retrieve_runbooks(
             request.service, request.symptom, state.root_cause
         )
+        plan = graph_state.get("investigation_plan")
+        if plan is not None and plan.knowledge_query != request.symptom:
+            expanded = self.knowledge_retriever.retrieve_runbooks(
+                request.service, plan.knowledge_query, state.root_cause
+            )
+            seen = {item.runbook_id for item in runbooks}
+            runbooks.extend(item for item in expanded if item.runbook_id not in seen)
+            runbooks = runbooks[:3]
         history = self.knowledge_retriever.retrieve_incidents(state)
         state.evidence.append(Evidence(
             source="runbook", summary="deterministic runbook retrieval",
@@ -246,6 +306,8 @@ class IncidentWorkflow:
                     deterministic_confidence=baseline_confidence,
                     runbooks=[item.model_dump(mode="json") for item in runbooks],
                     incident_history=[item.model_dump(mode="json") for item in history],
+                    investigation_plan=plan.model_dump(mode="json") if plan else None,
+                    tool_observations=graph_state.get("tool_observations", []),
                 )
                 # Known failure signatures remain authoritative. For an inconclusive
                 # baseline, the model may improve the user-facing candidate but cannot
@@ -271,7 +333,10 @@ class IncidentWorkflow:
                 state.evidence.append(Evidence(
                     source="llm_analysis",
                     summary="local LLM unavailable; deterministic RCA retained",
-                    data={"model": self.incident_analyzer.name, "error": str(exc)[:500]},
+                    data={
+                        "model": self.incident_analyzer.name,
+                        "error_type": type(exc).__name__, "error": str(exc)[:500],
+                    },
                 ))
         self.event(state, AgentName.RCA, f"Root cause: {state.root_cause} ({state.confidence:.0%})")
         return {"incident": state, "target": target, "llm_analysis": llm_analysis}
@@ -292,6 +357,18 @@ class IncidentWorkflow:
             title = matched_runbook.get("title") if matched_runbook else None
         if title is None and state.root_cause == "Container CPU usage is high":
             title = f"Restart {target} and verify container CPU usage"
+        if llm_analysis is not None:
+            state.evidence.append(Evidence(
+                source="llm_solution",
+                summary=f"non-executable remediation plan from {self.incident_analyzer.name}",
+                data={
+                    "model": self.incident_analyzer.name,
+                    "title": llm_analysis.recommendation_title,
+                    "steps": llm_analysis.recommended_steps,
+                    "execution_target_source": "deterministic_policy",
+                    "command_source": "deterministic_runbook_or_allowlist",
+                },
+            ))
         state.recommendations.append(Recommendation(
             title=title or f"Restart {target} and verify dependency metrics", command=command,
             risk=RiskLevel.MEDIUM, requires_approval=True,
@@ -371,6 +448,29 @@ class IncidentWorkflow:
             state.evidence.append(Evidence(
                 source="verification", summary="bounded service recovery check", data=result,
             ))
+            if self.incident_analyzer is not None:
+                try:
+                    explanation = await self.incident_analyzer.explain_verification(
+                        service=request.service, target=target, result=result,
+                    )
+                    state.evidence.append(Evidence(
+                        source="llm_verification",
+                        summary=f"verification explanation from {self.incident_analyzer.name}",
+                        data={
+                            **explanation.model_dump(mode="json"),
+                            "model": self.incident_analyzer.name,
+                            "deterministic_verified": result["verified"],
+                        },
+                    ))
+                except Exception as exc:
+                    state.evidence.append(Evidence(
+                        source="llm_verification",
+                        summary="local LLM verification explanation unavailable",
+                        data={
+                            "model": self.incident_analyzer.name,
+                            "error_type": type(exc).__name__, "error": str(exc)[:500],
+                        },
+                    ))
             self.event(state, AgentName.VERIFICATION, result["message"])
         elif request.execute:
             if state.status == "execution_failed":
@@ -484,6 +584,8 @@ class IncidentWorkflow:
                 "cpu_metrics": [],
                 "logs": [],
                 "target": request.service,
+                "investigation_plan": None,
+                "tool_observations": [],
                 "llm_analysis": None,
                 "policy_decision": None,
                 "evidence_context": evidence_context,

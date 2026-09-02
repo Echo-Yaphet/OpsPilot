@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-02 (local Ollama-assisted RCA milestone)
+Last updated: 2026-09-03 (multi-stage local Ollama Agent milestone)
 
 ## Continue from here
 
@@ -104,8 +104,10 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Semantic matches supplement rather than displace exact deterministic results; deterministic scores and ordering remain intact.
 - Missing configuration, endpoint failures, timeouts, malformed vector counts, and invalid dimensions fail open to SQLite deterministic retrieval.
 - The local MVP starts and tests without an embedding model, service, or API key.
-- An optional local Ollama analyzer consumes bounded incident evidence and returns a strict structured RCA candidate, rationale, confidence, and non-executable recommendation title. Known deterministic failure signatures, target selection, commands, policy, approval, and execution remain outside model control.
-- Ollama failures and malformed output fail open to deterministic RCA. Inconclusive model candidates are capped below the trusted conclusion threshold, and model provenance plus rationale are retained in the existing evidence shape.
+- An optional local Ollama analyzer participates through one typed seam in Coordinator planning, multi-candidate RCA, Knowledge query expansion, non-executable Solution drafting, and post-execution Verification explanation.
+- Coordinator may select only `service_health` and `container_status`; dependency metrics, CPU metrics, and error logs remain a mandatory deterministic baseline. Prometheus timestamps are removed before model input, health/value semantics are explicit, and side-effect tool names are rejected by schema.
+- Known deterministic failure signatures, target selection, commands, policy, approval, execution, and the final `verified` value remain outside model control. Ollama failures and malformed output fail open per stage; inconclusive model results are capped below the trusted conclusion threshold.
+- Model provenance, plans, tool observations, candidates, proposed steps, and verification explanations remain in the existing evidence shape and are labeled `LOCAL LLM` by the Dashboard.
 - Alertmanager firing analysis carries its original `startsAt` into an internal evidence context without changing `AnalyzeRequest`'s public schema; manual analysis uses its request start time.
 - Prometheus dependency queries are evaluated at the incident time, while Loki queries are bounded to two minutes before through five minutes after the incident (and never beyond the current time).
 - A new `incident_context` evidence record exposes the origin, incident timestamp, source query windows/modes, and result counts while preserving existing Prometheus/Loki list-shaped evidence data.
@@ -133,12 +135,13 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 
 ## Verified
 
-Latest verification for the local Ollama-assisted RCA milestone:
+Latest verification for the multi-stage local Ollama Agent milestone:
 
-- The rebuilt current-source suite passed 112 backend tests with the existing single LangGraph deprecation warning. Coverage proves successful enrichment, inconclusive-candidate confidence capping, deterministic target/command ownership, configuration validation, and model-failure fallback.
-- The rebuilt Control API reached host Ollama 0.32.5 and used the installed `gemma3:latest` 4.3B model. A live no-fault analysis persisted structured `llm_analysis` evidence and a model-authored recommendation title while remaining `recommendation_ready`.
-- A real Redis outage retained the deterministic `Redis dependency is unavailable` root cause and `docker compose restart redis` command while Ollama added its rationale and `Restart Redis Dependency` title. Recommendation-only incident `cd1468f4-3718-4910-a99a-1fbeeba037d5` did not execute; explicit approval then produced incident `81ac96be-ce40-4a46-86dd-fabb172978d0`, `resolved`, `execution_result="restarted redis"`, and `verified=true` after two checks.
-- The model never receives an execution tool and cannot select a target or command. Existing policy allowlists, approval, workload identity, replay prevention, actuator isolation, and Verification boundaries remain unchanged.
+- The rebuilt current-source suite passed 117 backend tests with the existing single LangGraph deprecation warning; the Dashboard production build, Compose validation, Promtail 3.5.3 syntax, Prometheus configuration and all nine rules, Alertmanager configuration, and final smoke also passed. Coverage includes typed read-only planning, side-effect tool rejection, timestamp-free metric input, multi-stage failure fallback, deterministic target/command ownership, and immutable Verification results.
+- With `qwen2.5:7b`, live healthy-path incident `be4fb480-1d82-4b97-aa08-f3dc89284227` correctly interpreted Redis/MySQL as healthy, selected both allowed probes, produced three RCA candidates, retained confidence `0.45`, remained `recommendation_ready`, and performed no execution. On this host the 7B Redis analysis exceeded the 90-second stage timeout and safely fell back, so `qwen2.5:1.5b` remains the practical demo default.
+- With `qwen2.5:1.5b`, real Redis recommendation-only incident `6fa681a1-dd2c-4388-89d4-0ebfd0194afb` persisted successful planning, additional probe results, candidate RCA, and non-executable Solution evidence while retaining the deterministic root cause, confidence `0.92`, and command; it did not execute.
+- Missing-approval incident `f49edd97-3a3e-4b38-9709-96316771dc88` stopped at `awaiting_approval`. Explicitly approved incident `5ca35dea-bdd1-46d8-bbaa-da4dfc60295f` executed `restarted redis`, reached `resolved`, and set `verified=true` after two deterministic checks; only afterward did Ollama add a Verification explanation carrying `deterministic_verified=true`.
+- Existing recommendation-only defaults, policy/approval independence, workload identity, replay prevention, actuator isolation, and Alertmanager non-execution remain unchanged.
 
 Latest verification for the orchestrator-native placement and shared runtime audit milestone:
 
@@ -512,7 +515,7 @@ Local entry points:
 
 ## Current limitations
 
-- LangGraph provides orchestration and checkpointed state. A local Ollama model now assists RCA explanations and recommendation wording, while deterministic rules remain authoritative for known signatures, targets, commands, policy, approval, and execution.
+- LangGraph provides orchestration and checkpointed state. A local Ollama model can now plan bounded read-only investigation, generate RCA candidates and knowledge-query expansion, draft Solution steps, and explain Verification. Deterministic rules remain authoritative for known signatures, targets, commands, policy, approval, execution, and verification truth.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
@@ -713,12 +716,13 @@ Local entry points:
 - Added a five-target Kubernetes Kustomize runtime plane with shared process namespaces, per-workload persistent actuator state, no ServiceAccount tokens, least-privilege security contexts, runtime NetworkPolicies, and an external Secret contract.
 - Revalidated live two-broker shared replay denial, default identity boundaries, the rebuilt 21-service Compose stack, CPU recommendation-only behavior, and Redis recommendation → approval block → approved verified recovery.
 
-### Completed: local Ollama-assisted RCA
+### Completed: multi-stage local Ollama Agents
 
-- Added an optional Ollama adapter with strict structured output and bounded, injection-aware evidence context.
-- Added model provenance and rationale to the existing evidence format; the Dashboard identifies local-LLM evidence and displays its rationale.
-- Kept deterministic signatures authoritative and retained deterministic target/command generation, independent policy and approval gates, recommendation-only defaults, identity, replay, actuator, and Verification boundaries.
-- Revalidated model success, failure fallback, a no-fault analysis, and the real Redis recommendation → approved verified recovery path with `gemma3:latest`.
+- Deepened the optional Ollama analyzer seam to cover bounded Coordinator planning, RCA candidates, Knowledge query expansion, non-executable Solution steps, and Verification explanation.
+- Restricted model-selected probes to a typed read-only catalog, retained mandatory metric/log collection, normalized Prometheus samples, bounded context/output, and isolated failure fallback at every model stage.
+- Added model plans, observations, candidates, steps, and verification explanations to the existing evidence format; the Dashboard identifies all `llm_*` evidence as `LOCAL LLM`.
+- Kept deterministic signatures authoritative and retained deterministic target/command generation, independent policy and approval gates, recommendation-only defaults, identity, replay, actuator, and Verification truth boundaries.
+- Revalidated healthy-path interpretation with `qwen2.5:7b`, then the real Redis recommendation → approval block → approved verified recovery path with the responsive `qwen2.5:1.5b` demo default.
 
 ### Then: knowledge and further production safety
 
