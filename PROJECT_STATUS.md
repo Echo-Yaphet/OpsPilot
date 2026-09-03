@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-03 (multi-stage local Ollama Agent milestone)
+Last updated: 2026-09-03 (Qwen3.5 9B local-model evaluation)
 
 ## Continue from here
 
@@ -134,6 +134,14 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the Qwen3.5 9B local-model evaluation:
+
+- Added an explicit `LLM_THINK` setting and sends Ollama's top-level `think=false` by default while retaining strict JSON Schema output and Pydantic validation. The rebuilt current-source suite passed 118 backend tests with the existing single LangGraph deprecation warning. The Docker-based Dashboard production build, Compose, Promtail 3.5.3, Alertmanager, Prometheus config and all nine rules passed; final smoke incident `6732304f-cc02-428e-8669-bf0f100d27ee` completed with Qwen3.5 evidence and recommendation-only behavior.
+- A direct `qwen3.5:9b` Q4_K_M call with `think=false` and JSON Schema completed in 9.3 seconds and correctly classified supplied Redis/MySQL metrics of `1` plus healthy service probes as healthy.
+- Rebuilt live healthy-path incident `e701c781-fa38-4321-a7a7-98c8a9b309e8` completed in 43.4 seconds. Coordinator selected both allowed read-only probes; RCA explicitly explained that `dependency_up=1`, healthy dependency booleans, and a running container contradicted the supplied symptom. It retained the deterministic insufficient-evidence result, remained `recommendation_ready`, and performed no execution.
+- In the real Redis-down path, both Coordinator and RCA hit the existing 90-second per-stage timeout; incident `17a9239f-a27b-4d00-9ed5-79266698ff47` safely retained deterministic root cause `Redis dependency is unavailable`, confidence `0.92`, and recommendation-only behavior. Isolated Coordinator and JSON-mode probes consistently took about 90-95 seconds for only 79-126 output tokens, so this host/Ollama combination is quality-improving but too slow for a responsive multi-stage fault demo without runtime/model optimization.
+- The independent safety path remained intact: missing-approval incident `24e05943-847a-46f7-9ef7-1ffaf75b620d` stopped at `awaiting_approval`; approved incident `926dbe34-58fb-4f39-8fdb-0f35c4de8338` executed `restarted redis`, reached `resolved`, and set `verified=true` after three deterministic checks. Runtime identity validation returned missing identity 401, unknown target 403, first use 200, replay 401, and raw route 404; actual runtime mounts contained no Docker socket and final Prometheus alerts were empty. The final Control API runs with `LLM_MODEL=qwen3.5:9b`, `LLM_TIMEOUT=90`, and `LLM_THINK=false` for direct comparison.
 
 Latest verification for the multi-stage local Ollama Agent milestone:
 
@@ -515,7 +523,7 @@ Local entry points:
 
 ## Current limitations
 
-- LangGraph provides orchestration and checkpointed state. A local Ollama model can now plan bounded read-only investigation, generate RCA candidates and knowledge-query expansion, draft Solution steps, and explain Verification. Deterministic rules remain authoritative for known signatures, targets, commands, policy, approval, execution, and verification truth.
+- LangGraph provides orchestration and checkpointed state. A local Ollama model can now plan bounded read-only investigation, generate RCA candidates and knowledge-query expansion, draft Solution steps, and explain Verification. Deterministic rules remain authoritative for known signatures, targets, commands, policy, approval, execution, and verification truth. `qwen3.5:9b` improves healthy-evidence interpretation over the prior 1.5B model, but on this host its structured stages can take about 90-95 seconds and trigger the fail-open timeout during a multi-stage Redis analysis.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
@@ -723,6 +731,7 @@ Local entry points:
 - Added model plans, observations, candidates, steps, and verification explanations to the existing evidence format; the Dashboard identifies all `llm_*` evidence as `LOCAL LLM`.
 - Kept deterministic signatures authoritative and retained deterministic target/command generation, independent policy and approval gates, recommendation-only defaults, identity, replay, actuator, and Verification truth boundaries.
 - Revalidated healthy-path interpretation with `qwen2.5:7b`, then the real Redis recommendation → approval block → approved verified recovery path with the responsive `qwen2.5:1.5b` demo default.
+- Evaluated `qwen3.5:9b` with explicit non-thinking structured requests: healthy-path factual quality improved, while live Redis stages exposed a reproducible local latency limitation and retained deterministic fail-open behavior plus all independent safety gates.
 
 ### Then: knowledge and further production safety
 

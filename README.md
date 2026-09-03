@@ -186,11 +186,12 @@ Docker Compose 中可使用宿主机 Ollama：
 
 ```bash
 LLM_BASE_URL=http://host.docker.internal:11434
-LLM_MODEL=qwen2.5:1.5b
+LLM_MODEL=qwen3.5:9b
 LLM_TIMEOUT=90
+LLM_THINK=false
 ```
 
-`qwen2.5:1.5b` 是当前本机演示默认值；更大的模型可直接通过 `LLM_MODEL` 替换，但需要按硬件调整超时。`llm_investigation`、`llm_analysis`、`llm_solution`、`llm_verification` 会作为 `LOCAL LLM` evidence 显示在 Dashboard。模型可参与调查、分析、知识查询扩展、方案表达和结果解释，但固定操作、策略白名单、风险分级、人工审批、runtime identity、防重放以及 `verified` 判定均保持在模型边界之外。
+`qwen3.5:9b` 是当前本机验证模型。结构化 Agent 阶段默认设置 `LLM_THINK=false`，避免思考内容增加延迟或干扰 JSON Schema 输出；如需对支持该能力的模型进行实验，可显式开启。更换模型后应按硬件调整超时。在当前主机与 Ollama 版本下，9B 模型对健康证据的判断明显优于 1.5B，但复杂结构化阶段约需 90 秒，可能触发默认超时并安全回退；需要更流畅的现场演示时，可改回较小模型或升级/优化 Ollama 运行环境。`llm_investigation`、`llm_analysis`、`llm_solution`、`llm_verification` 会作为 `LOCAL LLM` evidence 显示在 Dashboard。模型可参与调查、分析、知识查询扩展、方案表达和结果解释，但固定操作、策略白名单、风险分级、人工审批、runtime identity、防重放以及 `verified` 判定均保持在模型边界之外。
 
 Prometheus、Loki 和 Alertmanager 取证现共享事故时间上下文。手动分析以请求开始时间为锚点；Alertmanager firing 事件使用原始 `startsAt`。Prometheus 查询锚定事故时刻，Loki 只查询事故前两分钟至后五分钟（不超过当前时间）的窗口，减少十分钟滚动窗口内旧错误的干扰。关联范围、来源、查询模式和结果数量写入新增的 `incident_context` evidence；原有 Prometheus/Loki evidence 数据格式、`IncidentState` 和 HTTP schema 保持不变。指标仍优先于日志完成 Redis/MySQL RCA。
 

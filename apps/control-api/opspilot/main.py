@@ -69,7 +69,10 @@ verification_policy_peer_authenticator = VerificationPolicyPeerAuthenticator(
 incident_analyzer = None
 if settings.llm_base_url and settings.llm_model:
     incident_analyzer = OllamaIncidentAnalyzer(
-        settings.llm_base_url, settings.llm_model, settings.llm_timeout,
+        settings.llm_base_url,
+        settings.llm_model,
+        settings.llm_timeout,
+        settings.llm_think,
     )
 workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
     settings.executor_gateway_url,

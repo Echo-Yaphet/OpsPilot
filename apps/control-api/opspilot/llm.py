@@ -85,16 +85,20 @@ class IncidentAnalyzer(Protocol):
 class OllamaIncidentAnalyzer:
     """Deep local-model module behind one typed seam and three bounded operations."""
 
-    def __init__(self, base_url: str, model: str, timeout: float = 90):
+    def __init__(
+        self, base_url: str, model: str, timeout: float = 90, think: bool = False,
+    ):
         self.url = f"{base_url.rstrip('/')}/api/chat"
         self.model = model
         self.timeout = timeout
+        self.think = think
         self.name = f"ollama/{model}"
 
     async def _chat(self, schema: type[BaseModel], system: str, context: dict) -> BaseModel:
         payload = {
             "model": self.model,
             "stream": False,
+            "think": self.think,
             "format": schema.model_json_schema(),
             "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 512},
             "messages": [

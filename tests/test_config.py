@@ -66,6 +66,14 @@ def test_local_llm_configuration_requires_url_and_model_together(monkeypatch):
         llm_base_url="http://host.docker.internal:11434", llm_model="gemma3:latest",
     )
     assert settings.llm_model == "gemma3:latest"
+    assert settings.llm_think is False
+
+    thinking_settings = Settings(
+        llm_base_url="http://host.docker.internal:11434",
+        llm_model="qwen3.5:9b",
+        llm_think=True,
+    )
+    assert thinking_settings.llm_think is True
 
 
 @pytest.mark.parametrize("kwargs", [

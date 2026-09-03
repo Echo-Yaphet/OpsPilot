@@ -52,6 +52,7 @@ async def test_ollama_planner_uses_schema_and_fixed_read_only_tool_catalog(monke
     assert plan.read_only_tools == ["service_health"]
     assert captured["url"] == "http://ollama:11434/api/chat"
     assert captured["payload"]["stream"] is False
+    assert captured["payload"]["think"] is False
     assert captured["payload"]["format"]["properties"]["read_only_tools"]
     user_context = json.loads(captured["payload"]["messages"][1]["content"])
     assert user_context["mandatory_baseline_tools"] == [
@@ -121,3 +122,24 @@ async def test_ollama_analysis_exposes_current_metric_values_without_timestamps(
     assert user_context["cpu_metrics"] == [{
         "labels": {"service": "payment-service"}, "current_value": "0.01",
     }]
+
+
+@pytest.mark.asyncio
+async def test_ollama_thinking_mode_is_explicitly_configurable(monkeypatch):
+    captured = {}
+    response = FakeResponse(json.dumps({
+        "objective": "Inspect service health",
+        "read_only_tools": ["service_health"],
+        "knowledge_query": "payment-service health",
+        "rationale": "Check the supplied health signal.",
+    }))
+    monkeypatch.setattr(
+        "opspilot.llm.httpx.AsyncClient", lambda timeout: FakeClient(response, captured)
+    )
+
+    analyzer = OllamaIncidentAnalyzer(
+        "http://ollama:11434", "qwen3.5:9b", think=True,
+    )
+    await analyzer.plan(service="payment-service", symptom="degraded")
+
+    assert captured["payload"]["think"] is True
