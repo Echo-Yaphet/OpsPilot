@@ -19,6 +19,7 @@ from test_workflow import FakeTools
 
 def harness(tmp_path, responder, tools=None, **budget):
     requests = []
+    skill_provider = budget.pop("skill_provider", None)
 
     async def handler(request):
         data = json.loads(request.content)
@@ -38,7 +39,8 @@ def harness(tmp_path, responder, tools=None, **budget):
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     ))
     investigator = SDKInvestigator(tools or FakeTools(), model,
-        InvestigationJournal(str(tmp_path / "runs.db")), InvestigationBudget(**budget))
+        InvestigationJournal(str(tmp_path / "runs.db")), InvestigationBudget(**budget),
+        skill_provider=skill_provider)
     return investigator, requests
 
 
@@ -77,6 +79,24 @@ async def test_sdk_observes_tool_result_before_choosing_next_probe_and_persists(
     with sqlite3.connect(investigator.journal.path) as connection:
         saved = json.loads(connection.execute("SELECT payload FROM investigation_runs").fetchone()[0])
     assert saved == result
+
+
+@pytest.mark.asyncio
+async def test_promoted_skill_is_versioned_advisory_context_only(tmp_path):
+    def respond(data, turn):
+        if turn == 1:
+            system = next(item["content"] for item in data["messages"] if item["role"] == "system")
+            assert "Promoted diagnostic guidance (advisory only)" in system
+            assert "Prefer incident-time evidence" in system
+            return call("service_health")
+        return {"role": "assistant", "content": "Observed current service health."}
+
+    investigator, _ = harness(
+        tmp_path, respond, skill_provider=lambda: (7, "- Prefer incident-time evidence"),
+    )
+    result = await run(investigator)
+    assert result["skill_version"] == 7
+    assert result["tool_calls"] == 1
 
 
 @pytest.mark.asyncio

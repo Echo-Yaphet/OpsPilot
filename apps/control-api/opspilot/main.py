@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -31,6 +32,12 @@ from .repair import (
     SDKRepairAgent,
 )
 from .storage import IncidentStore, PostgresIncidentStore
+from .skill_promotion import (
+    SkillCandidateRequest,
+    SkillPromotionError,
+    SkillPromotionRequest,
+    SkillPromotionService,
+)
 from .tools import LiveOpsTools
 from .workflow import IncidentWorkflow
 
@@ -39,6 +46,19 @@ instrument_fastapi(app, "opspilot-control-api")
 tools = LiveOpsTools(settings)
 store = (PostgresIncidentStore(settings.database_url, settings.database_path)
          if settings.database_url else IncidentStore(settings.database_path))
+skill_promotion = SkillPromotionService(
+    store, settings.skill_cases_file, settings.skill_workspace_root,
+)
+
+
+def _authorize_skill_mutation(authorization: str | None) -> None:
+    expected = f"Bearer {settings.skill_promotion_token}"
+    if not settings.skill_promotion_token or not authorization or not hmac.compare_digest(
+        authorization, expected
+    ):
+        raise HTTPException(status_code=401, detail="valid Skill promotion identity is required")
+
+
 knowledge_retriever = store
 embedding_provider = None
 if settings.embedding_base_url and settings.embedding_model:
@@ -106,6 +126,7 @@ if settings.investigation_mode == "agents_sdk":
                             max_total_tokens=settings.investigation_max_total_tokens),
         event_memory=event_memory, embeddings=embedding_provider,
         service_version=settings.service_version,
+        skill_provider=skill_promotion.active_instructions,
     )
 repair_agent = None
 if settings.repair_mode == "agents_sdk":
@@ -152,6 +173,49 @@ async def memory_status():
     if event_memory is None:
         return {"backend": "disabled", "healthy": True, "active_events": 0}
     return event_memory.health()
+
+
+@app.get("/api/v1/skills/cases")
+async def list_skill_cases():
+    """Return the immutable, server-owned evaluation cases and their digest."""
+    return skill_promotion.list_cases()
+
+
+@app.get("/api/v1/skills/{skill_id}/versions")
+async def list_skill_versions(skill_id: str):
+    return skill_promotion.list_versions(skill_id)
+
+
+@app.get("/api/v1/skills/{skill_id}/active")
+async def get_active_skill(skill_id: str):
+    try:
+        return skill_promotion.active(skill_id)
+    except SkillPromotionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/skills/candidates", status_code=201)
+async def create_skill_candidate(
+    request: SkillCandidateRequest, authorization: str | None = Header(default=None),
+):
+    """Freeze, isolate and evaluate a candidate; this never promotes it."""
+    _authorize_skill_mutation(authorization)
+    try:
+        return skill_promotion.create_candidate(request)
+    except SkillPromotionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/skills/promotions")
+async def promote_skill(
+    request: SkillPromotionRequest, authorization: str | None = Header(default=None),
+):
+    """Promote only a passing, current-parent candidate with explicit approval."""
+    _authorize_skill_mutation(authorization)
+    try:
+        return skill_promotion.promote(request)
+    except SkillPromotionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/verification-policy/status")

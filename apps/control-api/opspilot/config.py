@@ -329,6 +329,9 @@ class Settings(BaseSettings):
     investigation_max_tool_calls: int = Field(default=6, ge=1, le=20)
     investigation_timeout: float = Field(default=120, gt=0, le=300)
     investigation_max_total_tokens: int = Field(default=4096, ge=256, le=65536)
+    skill_cases_file: str = str(Path(__file__).with_name("skill_cases.json"))
+    skill_workspace_root: str = "/data/skill-workspaces"
+    skill_promotion_token: str = "opspilot-local-skill-promotion"
     repair_mode: Literal["disabled", "agents_sdk"] = "disabled"
     repair_sandbox_url: str | None = None
     repair_sandbox_token: str = ""

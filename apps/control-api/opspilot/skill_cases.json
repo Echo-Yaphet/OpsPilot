@@ -1,0 +1,37 @@
+[
+  {
+    "case_id": "redis-down-original",
+    "suite": "regression",
+    "service": "payment-service",
+    "trajectory": ["incident metric dependency=redis value=0", "current service health=false"],
+    "expected_root_cause": "Redis dependency is unavailable"
+  },
+  {
+    "case_id": "mysql-down-original",
+    "suite": "regression",
+    "service": "order-service",
+    "trajectory": ["incident metric dependency=mysql value=0", "current service health=false"],
+    "expected_root_cause": "MySQL dependency is unavailable"
+  },
+  {
+    "case_id": "redis-mentioned-but-healthy",
+    "suite": "counterexample",
+    "service": "payment-service",
+    "trajectory": ["old log mentions redis timeout", "incident metric dependency=redis value=1"],
+    "expected_root_cause": null
+  },
+  {
+    "case_id": "mysql-mentioned-but-healthy",
+    "suite": "counterexample",
+    "service": "order-service",
+    "trajectory": ["symptom says mysql unavailable", "incident metric dependency=mysql value=1"],
+    "expected_root_cause": null
+  },
+  {
+    "case_id": "unrelated-service-degradation",
+    "suite": "counterexample",
+    "service": "user-service",
+    "trajectory": ["current service health=false", "dependency metrics are unavailable"],
+    "expected_root_cause": null
+  }
+]

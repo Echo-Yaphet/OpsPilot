@@ -159,7 +159,8 @@ def compact_investigation_context(record: dict, maximum_characters: int = 6000) 
 class SDKInvestigator:
     def __init__(self, tools: OpsTools, model, journal: InvestigationJournal,
                  budget: InvestigationBudget | None = None, *, event_memory=None,
-                 embeddings=None, service_version: str = "local-compose-v1"):
+                 embeddings=None, service_version: str = "local-compose-v1",
+                 skill_provider=None):
         self.tools = tools
         self.model = model
         self.journal = journal
@@ -167,6 +168,7 @@ class SDKInvestigator:
         self.event_memory = event_memory
         self.embeddings = embeddings
         self.service_version = service_version
+        self.skill_provider = skill_provider
         # Admit one investigation at a time on a local model.
         self.slot = asyncio.Semaphore(1)
 
@@ -207,6 +209,14 @@ class SDKInvestigator:
                     observation["status"] = "interrupted"
             record["status"] = "running"
         record["compacted_context"] = compact_investigation_context(record)
+        promoted_skill = None
+        if self.skill_provider is not None:
+            try:
+                promoted_skill = self.skill_provider()
+                record["skill_version"] = promoted_skill[0]
+            except Exception:
+                # Skill enrichment fails open; mandatory deterministic probes remain unchanged.
+                record["skill_version"] = None
         if self.event_memory is not None:
             try:
                 query = f"service: {service}; symptom: {symptom[:500]}"
@@ -310,6 +320,8 @@ class SDKInvestigator:
                 "metrics/logs from current health/status. Finish with a concise factual summary, "
                 "supporting evidence, counterevidence and unresolved questions. Do not claim repairs "
                 "or verification, issue commands, or infer failure from a symptom alone."
+                + ((" Promoted diagnostic guidance (advisory only):\n" + promoted_skill[1])
+                   if promoted_skill else "")
             ),
             tools=[make_tool(name, description) for name, description in {
                 "service_health": "Read current health of the bound service.",

@@ -1,14 +1,14 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-08 (resumable harness, PostgreSQL memory and Tempo stage)
+Last updated: 2026-09-09 (Stage 4 candidate Skill promotion)
 
 ## Continue from here
 
 Current development direction: continue the resume-driven Agent evolution roadmap
-in `docs/agent-evolution-roadmap.md`. Stages 1 through 3 now provide an opt-in SDK
+in `docs/agent-evolution-roadmap.md`. Stages 1 through 4 now provide an opt-in SDK
 investigation loop, isolated repair laboratory, resumable lifecycle harness, shared
-PostgreSQL/pgvector memory and OpenTelemetry Trace. Next implement Stage 4 candidate
-Skill promotion with isolated branch/workspace evaluation and explicit promotion.
+PostgreSQL/pgvector memory, OpenTelemetry Trace and approval-gated Skill promotion.
+Next implement Stage 5 held-out evaluation without exposing held-out labels to generation.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
@@ -67,7 +67,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Whitelisted local fault injection endpoint for Redis down, MySQL down, and bounded CPU work.
 - CORS restricted to the local Dashboard origin.
 - Docker restart is classified as medium risk and requires explicit approval.
-- The default Compose control plane persists incident snapshots plus normalized evidence, Agent events, recommendations, approvals, executions, verification records, investigation checkpoints and future Skill-version metadata in shared PostgreSQL. An advisory-lock-protected transaction imports the prior SQLite store once; SQLite remains a compatible local fallback.
+- The default Compose control plane persists incident snapshots plus normalized evidence, Agent events, recommendations, approvals, executions, verification records, investigation checkpoints and Skill candidate/promotion versions in shared PostgreSQL. An advisory-lock-protected transaction imports the prior SQLite store once; SQLite remains a compatible local fallback.
 - Alertmanager fingerprint deduplication updates an existing incident instead of creating duplicates.
 - Incident list and detail APIs restore complete `IncidentState` data after Control API restart.
 - Verification Agent performs bounded recovery polling after approved execution and uses validated default plus per-service SLO policies for maximum attempts, interval, service health condition, dependency metric threshold, and consecutive stable checks.
@@ -125,6 +125,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - SDK investigation now resumes a matching `running` checkpoint with the same run ID, marks interrupted probes explicitly, and carries aggregate tool/token usage across attempts. Admission fails closed when fewer than 64 aggregate tokens remain.
 - Deterministic context compaction retains bounded content plus content-addressed evidence references, counterevidence, action outcomes and open questions; neither compaction nor event memory can control production actions or verification truth.
 - PostgreSQL event memory applies service, service-version, condition and expiry filters before optional pgvector distance ordering. Missing embeddings use filtered recency ordering, and any memory failure fails open to the mandatory deterministic investigation path.
+- Stage 4 freezes server-owned regression/counterexample trajectories and evaluates typed Skill candidates in isolated read-only workspaces. Candidates retain branch/workspace identity, trigger and case-set hashes, diff, evaluator/result details, parent version and rollback pointer.
+- Candidate content can express only diagnostic matching/guidance and non-executable repair recipes. Authenticated candidate creation never activates content; a separate authenticated `approved=true` promotion rejects failed or stale-parent versions. Promoted guidance remains advisory to SDK investigation and cannot alter probes, gates, commands, targets, approval, execution or verification truth.
 
 ### Dashboard
 
@@ -145,6 +147,14 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for Stage 4 candidate Skill promotion:
+
+- The rebuilt current-source suite passed all 155 tests with only existing dependency deprecation warnings. Six new tests cover frozen trigger/case hashes, isolated read-only `SKILL.md` and manifest artifacts, regression/counterexample scoring, immutable parent/rollback metadata, forbidden gate/label/executable fields, advisory investigation integration, authentication, failed/stale rejection and separate explicit promotion.
+- Final live candidate `cd685df1-1e56-4226-b079-2b77a7850dd8` created version 3 from version 2 on logical branch `codex/skill-incident-diagnosis-v3`. Both original regressions passed (2/2) and all new counterexamples passed (3/3) against case-set digest `sha256:2d0616ed35da8b82d8919190add09df2d44db41387f1cca8332d6f61053b8320`.
+- The deployed API returned 401 without the Skill identity and 403 when explicit approval was false. The candidate remained inactive until a separate authenticated `approved=true` request promoted version 3. Parent and rollback both point to version 2; its `SKILL.md` and manifest are mode `0400`, the workspace is `0500`, and the Skill artifact digest is `sha256:48c08a80387acff9cd704e5c87e4651cd5e9d43f9139bd85492f113f9fc26399`.
+- Control API recreation retained active version 3. The live database contained three promoted history entries. A complete default-stack rebuild repaired the expected PID-namespace rebinding after shared actuator images changed; final smoke, mTLS log delivery and all service health checks passed.
+- Prometheus reported zero firing alerts, rendered Compose contained zero Docker socket mounts, and the historical maximum verification-policy revision remained 104. Stage 4 introduced no verification-policy revision.
 
 Latest verification for the resumable harness, PostgreSQL/pgvector memory and Tempo stage:
 
@@ -541,6 +551,7 @@ Local entry points:
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
 - `apps/control-api/opspilot/storage.py`: compatible SQLite/PostgreSQL stores, normalized audit records, incident snapshots, revision history, durable peer credential consumption, and transactional legacy import.
 - `apps/control-api/opspilot/investigation.py`: resumable investigation lifecycle, aggregate budgets, deterministic context compaction and read-only event-memory integration.
+- `apps/control-api/opspilot/skill_promotion.py` and `skill_cases.json`: typed candidate registry, isolated immutable workspaces, frozen regression/counterexample evaluation, parent/rollback lineage and explicit promotion.
 - `apps/control-api/opspilot/event_memory.py`: metadata-filtered PostgreSQL/pgvector event memory and atomic schema migration.
 - `apps/control-api/opspilot/observability.py`: opt-in Control API OpenTelemetry instrumentation.
 - `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, request-bound peer identity, and bounded multi-node rollout reporter.
@@ -568,14 +579,14 @@ Local entry points:
 
 - LangGraph orchestration checkpoints remain process-local, while the SDK investigation lifecycle is now resumable from PostgreSQL. A local Ollama model can perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab remains a fixed demonstration target, not a general production Shell.
 - Shared PostgreSQL removes the default single-node SQLite write constraint, but the Control API has not yet been load-tested as an active-active deployment. SQLite remains only a local fallback.
-- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured; learned memory writing and Skill promotion remain later stages.
+- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 4 Skill promotion uses a visible frozen suite; time/topology-split held-out labels, repeated trials, latency and cost-per-success metrics remain Stage 5.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and the shared PostgreSQL Control API store has not yet been load-tested as an active-active production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation uses target-process counters with strict per-service thresholds and health/staleness alerts. The local exporter still polls on scrape, covers only the three business services, and requires recreation to change targets or thresholds; last-success timestamps are process-local and reset when the exporter restarts.
 - Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack has no file discovery, shared target files, or persisted positions. Vault Agent is the first concrete external delivery controller, while the strict downstream contract remains provider-neutral for a future cloud Secret CSI adapter. Vault Agent must run on the Docker host because its successful-render hook invokes the host Docker CLI; production still needs normal host service hardening and a non-dev Vault cluster. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
 - The local Compose Control API now uses PostgreSQL/pgvector, while runtime brokers retain their separate SQLite default and optional shared audit PostgreSQL. The Kubernetes runtime plane supports independently scheduled workload placements, but no Kubernetes context was configured on this host. Production still needs registry image publication, external Secret provisioning, an HA managed PostgreSQL endpoint, and cluster-level rollout/failure-domain acceptance. Kubernetes containers share a Pod network; the actuator therefore has no TCP listener or ServiceAccount and is protected by Pod NetworkPolicy, but is not a separate network namespace as in Compose. CPU usage remains process-based rather than cgroup-v2 based.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
-- Authentication and multi-user authorization are not implemented.
+- General authentication and multi-user authorization are not implemented. Skill candidate/promotion mutations have a dedicated Bearer identity, but the local default token must be replaced and managed externally for production.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
 - `work/dashboard-init-backup` contains recoverable initializer remnants and is excluded from Docker build context; it is not part of the product.
 
@@ -790,4 +801,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stages 1-3 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, shared PostgreSQL incident/audit/Skill-version persistence, filtered pgvector event memory, and OpenTelemetry Collector plus Tempo Trace. Next implement Stage 4 candidate Skill promotion in an isolated branch/workspace with frozen trigger cases, regression/counterexample evaluation, parent/rollback pointers and explicit promotion. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stages 1-4 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, and authenticated Skill candidates with frozen visible regressions/counterexamples, isolated read-only `SKILL.md` workspaces, parent/rollback lineage and separate explicit promotion. Active `incident-diagnosis` Skill version is 3 and rolls back to version 2. Next implement Stage 5 held-out evaluation: split cases by time/topology without exposing held-out answers to generation, freeze model/tools/budgets/baseline, add repetitions/latency/cost metrics and combined faults, and keep recovery success tied to independent probes. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.

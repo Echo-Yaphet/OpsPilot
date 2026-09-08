@@ -74,11 +74,20 @@ No Trace tool is exposed to the model yet; Trace remains observability, not auth
 
 ## Stage 4: candidate skill promotion
 
-Freeze reproducible cases from failure trajectories. A coding agent proposes a
-versioned Skill in an isolated branch/workspace. Preserve the trigger case, diff,
-evaluation results, parent version and rollback pointer. Initially evolve diagnostic
-instructions and repair recipes only; never let it edit gates, probes or evaluation labels.
-Run original regressions plus new counterexamples before explicit promotion.
+Implemented. Reproducible failure trajectories are frozen in a server-owned case set
+with a content digest. An authenticated coding-agent client can submit only typed
+diagnostic instructions and non-executable repair guidance against an active parent.
+Each candidate receives an isolated, read-only workspace plus a logical branch name and
+preserves the trigger case/digest, content diff, deterministic evaluator version, complete
+regression/counterexample results, parent version and rollback pointer.
+
+The candidate schema cannot represent probes, gates, evaluation inputs/labels, production
+targets, commands, approval or verification truth. Original Redis/MySQL regressions and
+healthy/unrelated counterexamples are loaded only from the image-owned fixture. Candidate
+creation never changes the active Skill; a separate authenticated request with explicit
+`approved=true` is required, and stale-parent or failed candidates cannot be promoted.
+Promoted guidance is advisory context for SDK investigation while mandatory probes and all
+execution/verification controls remain independent.
 
 ## Stage 5: held-out evaluation
 

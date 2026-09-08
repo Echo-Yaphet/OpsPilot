@@ -87,6 +87,11 @@ class IncidentStore:
                     credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
                     expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS skill_versions (
+                    skill_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL,
+                    parent_version INTEGER, rollback_version INTEGER, promoted_at TEXT,
+                    PRIMARY KEY(skill_id, version)
+                );
             """)
             self._seed_runbooks(db)
 

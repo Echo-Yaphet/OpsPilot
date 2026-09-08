@@ -8,6 +8,8 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 可选 `repair-lab` profile 另提供 OpenAI Agents SDK 驱动的配置修复实验：模型只能在固定故障副本中读取工作区、生成由白名单步骤组成的诊断脚本和 Redis 配置候选。独立 validator 先验证候选，人工批准再绑定 package/base/target/digest/有效期/一次性 `jti`；应用后的独立健康探针失败会自动回滚。该链路不接触默认业务服务或现有 runtime executor。
 
+Stage 4 Skill promotion 由 Control API 提供独立注册表：编码 Agent 只能提交类型化诊断指令和非执行型修复指导，并引用服务端冻结的触发案例。候选在独立只读工作区中保存分支名、diff、案例与内容哈希、完整回归/反例结果、父版本和回滚指针；生成候选不会生效。只有携带 `SKILL_PROMOTION_TOKEN` 的独立请求并显式设置 `approved=true` 才能 promotion，通过后的指导也只作为 SDK 调查建议，不能改变探针、策略、target、命令、审批、执行或 `verified`。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -93,6 +95,17 @@ make repair-agent-live   # Qwen3.5 提案 -> 显式批准 -> 独立验证
 ```
 
 Control API 暴露 `POST /api/v1/repair-lab/proposals` 和 `POST /api/v1/repair-lab/approvals`。提案接口永不应用配置；批准接口只接受已持久化 package ID 和显式 `approved=true`。repair sandbox 使用非 root 用户、只读根目录、`cap_drop: ALL`、`no-new-privileges`、PID/CPU/内存限制及两个 internal network，且无 Docker socket。模型不能指定生产 target、签署审批、修改 validator/probe 或设置 `verified`。
+
+## Skill 候选评估与 promotion
+
+`GET /api/v1/skills/cases` 返回冻结案例与案例集哈希，`GET /api/v1/skills/{skill_id}/active` 和
+`/versions` 提供只读版本链。候选与 promotion 写接口都要求
+`Authorization: Bearer $SKILL_PROMOTION_TOKEN`：
+
+- `POST /api/v1/skills/candidates` 只创建并评估候选；请求需引用当前 `parent_version` 和一个冻结的 `trigger_case_id`。
+- `POST /api/v1/skills/promotions` 是独立操作，只有全量回归/反例通过、父版本仍为当前活动版本且 `approved=true` 时才切换活动版本。
+
+默认冻结集覆盖 Redis/MySQL 原始回归以及“文本提到依赖但事件时指标健康”和无关服务退化等反例。候选无法提交或覆盖案例、预期标签、探针和安全门；工作区清单以 `0400` 保存于持久卷。
 
 ## Redis 宕机最小链路验收
 
@@ -200,10 +213,10 @@ Coordinator 将使用 OpenAI Agents SDK 的真实工具循环，按观察结果�
 该模式目前只替换 Coordinator 调查阶段，RCA/Solution/Verification 继续使用原有流程。
 默认 `legacy` 模式保持兼容，模型与工具失败继续降级至强制指标/日志取证。
 隔离 Shell/Filesystem 修复实验和故障副本补丁验证已实现。默认 Compose 现使用共享 PostgreSQL
-保存 Incident、审计、调查生命周期及未来 Skill 版本注册表，并从原 SQLite 做事务化一次迁移；SQLite
+保存 Incident、审计、调查生命周期及 Skill 候选/晋级版本链，并从原 SQLite 做事务化一次迁移；SQLite
 仍是可用 fallback。事件记忆先按服务、服务版本、条件和过期时间过滤，再使用 pgvector 排序。
 Control API 与三个业务服务通过 OpenTelemetry Collector 写入 Tempo，Grafana 已配置 Tempo 数据源；
-Trace 尚未暴露为模型工具，Skills 晋级留在 Stage 4；
+Trace 尚未暴露为模型工具；Stage 4 Skill promotion 已完成，Stage 5 held-out evaluation 尚未实施；
 分阶段实施与验收条件见 [Agent 演进路线图](docs/agent-evolution-roadmap.md)。
 
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。
