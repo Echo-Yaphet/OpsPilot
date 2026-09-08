@@ -8,3 +8,7 @@ pydantic-settings==2.10.1
 pytest==8.4.1
 pytest-asyncio==1.1.0
 cryptography==45.0.7
+psycopg[binary]==3.2.10
+opentelemetry-sdk==1.37.0
+opentelemetry-exporter-otlp-proto-http==1.37.0
+opentelemetry-instrumentation-fastapi==0.58b0

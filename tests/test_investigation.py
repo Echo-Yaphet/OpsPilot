@@ -8,7 +8,10 @@ import pytest
 from agents import OpenAIChatCompletionsModel
 from openai import AsyncOpenAI
 
-from opspilot.investigation import InvestigationBudget, InvestigationJournal, SDKInvestigator
+from opspilot.investigation import (
+    InvestigationBudget, InvestigationJournal, SDKInvestigator,
+    compact_investigation_context,
+)
 from opspilot.models import AnalyzeRequest
 from opspilot.workflow import IncidentWorkflow
 from test_workflow import FakeTools
@@ -171,3 +174,70 @@ async def test_busy_investigation_skips_all_downstream_model_calls_but_can_recov
     assert state.status == "resolved"
     assert state.verified is True
     assert tools.restarted == "redis"
+
+
+def test_context_compaction_is_deterministic_and_preserves_safety_categories():
+    record = {
+        "observations": [
+            {"tool": "service_health", "status": "completed", "result": "healthy=false"},
+            {"tool": "error_logs", "status": "failed", "error_type": "TimeoutError",
+             "outcome": {"retryable": True}},
+        ],
+        "open_questions": ["Is the Redis failure still active?"],
+    }
+    first = compact_investigation_context(record, maximum_characters=20)
+    second = compact_investigation_context(record, maximum_characters=20)
+
+    assert first == second
+    assert first["evidence"][0]["evidence_ref"].startswith("sha256:")
+    assert first["counterevidence"][0]["status"] == "failed"
+    assert first["action_outcomes"][0]["outcome"] == {"retryable": True}
+    assert first["open_questions"] == ["Is the Redis failure still active?"]
+
+
+@pytest.mark.asyncio
+async def test_running_checkpoint_resumes_same_run_with_aggregate_budgets(tmp_path):
+    investigator, requests = harness(
+        tmp_path, lambda *_: {"role": "assistant", "content": "Prior evidence is sufficient."}
+    )
+    investigator.journal.save({
+        "run_id": "resume-1", "incident_id": "incident-1", "service": "payment-service",
+        "status": "running", "budget": investigator.budget.model_dump(), "model": "test",
+        "incident_at": datetime.now(timezone.utc).isoformat(),
+        "observations": [{"tool": "service_health", "status": "completed",
+                          "result": '{"healthy": false}', "truncated": False}],
+        "tool_calls": 1, "summary": None, "attempt": 1,
+        "aggregate_usage": {"requests": 1, "input_tokens": 20, "output_tokens": 10,
+                            "total_tokens": 30},
+        "open_questions": ["Which dependency failed?"],
+    })
+
+    result = await run(investigator)
+
+    assert result["run_id"] == "resume-1"
+    assert result["attempt"] == 2
+    assert result["recovered_from_checkpoint"] is True
+    assert result["tool_calls"] == 1
+    assert result["aggregate_usage"]["total_tokens"] == 60
+    model_input = json.loads(requests[0]["messages"][1]["content"])
+    assert model_input["resume_context"]["evidence"][0]["tool"] == "service_health"
+
+
+@pytest.mark.asyncio
+async def test_aggregate_token_budget_rejects_resume_before_model_call(tmp_path):
+    investigator, requests = harness(tmp_path, lambda *_: pytest.fail("model must not run"),
+                                      max_total_tokens=256)
+    investigator.journal.save({
+        "run_id": "spent", "incident_id": "incident-1", "service": "payment-service",
+        "status": "running", "budget": investigator.budget.model_dump(), "model": "test",
+        "incident_at": datetime.now(timezone.utc).isoformat(), "observations": [],
+        "tool_calls": 0, "summary": None, "attempt": 1,
+        "aggregate_usage": {"requests": 2, "input_tokens": 200, "output_tokens": 56,
+                            "total_tokens": 256},
+        "open_questions": [],
+    })
+
+    result = await run(investigator)
+
+    assert result["termination_reason"] == "token_budget_exhausted"
+    assert requests == []

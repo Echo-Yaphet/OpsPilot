@@ -1,14 +1,14 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-08 (isolated Agents SDK repair laboratory stage)
+Last updated: 2026-09-08 (resumable harness, PostgreSQL memory and Tempo stage)
 
 ## Continue from here
 
-Current development direction: implement the resume-driven Agent evolution roadmap
-in `docs/agent-evolution-roadmap.md`. Stages 1 and 2 now provide an opt-in SDK
-investigation loop plus an isolated Redis-configuration repair laboratory with
-generated diagnostics and immutable, prevalidated change packages. Next implement
-the resumable harness, context compaction and PostgreSQL/pgvector memory plus Trace.
+Current development direction: continue the resume-driven Agent evolution roadmap
+in `docs/agent-evolution-roadmap.md`. Stages 1 through 3 now provide an opt-in SDK
+investigation loop, isolated repair laboratory, resumable lifecycle harness, shared
+PostgreSQL/pgvector memory and OpenTelemetry Trace. Next implement Stage 4 candidate
+Skill promotion with isolated branch/workspace evaluation and explicit promotion.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
@@ -38,7 +38,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 
 ### Runtime and observability
 
-- Docker Compose monorepo with 21 running services, including an external workload-identity issuer, Alertmanager, a separate executor gateway, a socketless identity broker, five OS-isolated target actuators, and a socketless container metrics exporter.
+- Docker Compose monorepo with a shared PostgreSQL/pgvector memory database, OpenTelemetry Collector and Tempo in addition to the external workload-identity issuer, Alertmanager, executor gateway, socketless identity broker, five OS-isolated target actuators, and socketless container metrics exporter.
 - A Kustomize runtime-plane package defines five independently schedulable workload placements. Each Pod shares only its workload process namespace with an actuator and broker, carries no ServiceAccount token, persists quarantine state, and exposes the authenticated broker port only to labeled runtime clients.
 - Runtime brokers support either the compatible local SQLite store or a shared PostgreSQL DSN. PostgreSQL uses atomic global `jti` uniqueness and records placement plus executor instance on every action audit row; concurrent schema bootstrap is serialized with a transaction advisory lock.
 - Three FastAPI sample applications: `user-service`, `order-service`, and `payment-service`.
@@ -49,7 +49,8 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Loki and Promtail collect `user-service`, `order-service`, and `payment-service` through Docker runtime mTLS RFC5424 syslog forwarding. Each service uses a distinct externally issuable client certificate; the receiver verifies the trust bundle, optional CRL, server hostname, client certificate, and allowed service CN before forwarding only to Promtail's container-loopback listener. Versioned Secret import projects no CA private key, gives Promtail no client key, and supports overlap-gated hot rotation without changing `compose_service` or `container` labels.
 - A concrete HashiCorp Vault Agent integration reads one allowlisted KV v2 path through AppRole, renders each complete KV revision as one atomic JSON envelope, and invokes a host-side controller without adding another Docker socket mount. The controller rejects revision rollback and same-revision conflicts, strict-checks the exact bundle file set, creates immutable snapshots, reuses the existing validator/rotation path, and advances accepted state only after successful installation or three-stage rotation.
 - Prometheus derives all three per-service freshness signals from the label-preserving Promtail runtime counter. `ServiceLogCollectionStale` retains affected-service isolation, while the stack-level Loki-ingestion alert remains the downstream fallback; file-target publication and positions are no longer part of the deployed path.
-- Grafana has provisioned Prometheus and Loki data sources.
+- Grafana has provisioned Prometheus, Loki and Tempo data sources.
+- Control API, user-service, order-service and payment-service emit OTLP HTTP traces to an OpenTelemetry Collector; the Collector exports only traces to the single-node Tempo backend.
 - Prometheus forwards grouped alerts to Alertmanager, which delivers firing and resolved webhooks to the Control API.
 
 ### Control backend
@@ -66,7 +67,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Whitelisted local fault injection endpoint for Redis down, MySQL down, and bounded CPU work.
 - CORS restricted to the local Dashboard origin.
 - Docker restart is classified as medium risk and requires explicit approval.
-- SQLite persists incident snapshots plus normalized evidence, Agent events, recommendations, approvals, executions, and verification records in a Docker volume.
+- The default Compose control plane persists incident snapshots plus normalized evidence, Agent events, recommendations, approvals, executions, verification records, investigation checkpoints and future Skill-version metadata in shared PostgreSQL. An advisory-lock-protected transaction imports the prior SQLite store once; SQLite remains a compatible local fallback.
 - Alertmanager fingerprint deduplication updates an existing incident instead of creating duplicates.
 - Incident list and detail APIs restore complete `IncidentState` data after Control API restart.
 - Verification Agent performs bounded recovery polling after approved execution and uses validated default plus per-service SLO policies for maximum attempts, interval, service health condition, dependency metric threshold, and consecutive stable checks.
@@ -121,6 +122,9 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Alternative `OpsTools` implementations remain compatible: the workflow uses the original current/recent query methods when incident-time extensions are unavailable.
 - Offline retrieval evaluation now covers ten labeled positive, fuzzy, contradictory, wrong-service/root-cause, service-degradation, and unrelated cases with top-1 accuracy, false-positive rate, deterministic-regression count, and embedding fallback success-rate checks.
 - Semantic evaluation also covers low-similarity rejection, embedding failure, vector-count errors, dimension mismatches, and non-finite vector values.
+- SDK investigation now resumes a matching `running` checkpoint with the same run ID, marks interrupted probes explicitly, and carries aggregate tool/token usage across attempts. Admission fails closed when fewer than 64 aggregate tokens remain.
+- Deterministic context compaction retains bounded content plus content-addressed evidence references, counterevidence, action outcomes and open questions; neither compaction nor event memory can control production actions or verification truth.
+- PostgreSQL event memory applies service, service-version, condition and expiry filters before optional pgvector distance ordering. Missing embeddings use filtered recency ordering, and any memory failure fails open to the mandatory deterministic investigation path.
 
 ### Dashboard
 
@@ -141,6 +145,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the resumable harness, PostgreSQL/pgvector memory and Tempo stage:
+
+- The rebuilt current-source suite passed all 149 tests with only the existing dependency deprecation warnings. Compose rendering and the enhanced smoke suite passed against the deployed stack after the final Control API recreation; Control API and all three business services returned healthy with Redis and MySQL available.
+- SDK investigation checkpoints now resume a matching interrupted lifecycle with the same run ID, preserve completed observations, mark in-flight probes interrupted, and enforce aggregate tool/token admission across attempts. Deterministic compaction retains bounded evidence content plus SHA-256 references, counterevidence, action outcomes and open questions. Focused Stage 3 coverage passed 17 investigation/event-memory tests after a live pgvector timestamp-serialization regression was reproduced and fixed.
+- The default Control API persisted incident snapshots, normalized audit data, investigation journals and the future Skill registry in PostgreSQL. The one-time advisory-lock-protected SQLite import retained its 271 original incidents; the final live database contained 284 incidents, 13 investigation runs and an empty `skill_versions` registry. pgvector 0.8.6 was healthy with 42 active event-memory rows. Filtered memory was observed in the real Qwen3.5 investigation context without controlling mandatory evidence or actions.
+- OpenTelemetry Collector and Tempo were ready, and TraceQL returned Control API trace `5b4e91b3ee4790bb6234cab5415c9e6c` plus payment-service trace `6b177b9e80133e73351604c51c8bb4ed`, each matching three spans. Grafana retained the provisioned Tempo data source, and no Trace tool was exposed to the model.
+- A post-fix real Redis outage produced recommendation-only incident `1de3a310-6d52-4a71-9685-d0365c18f706` with no execution or Verification. Explicit execution without approval produced `0d0f62f0-94c5-48c5-bb31-2babb52cbaa5`, `awaiting_approval`, while its SDK investigation completed four read-only tools and loaded three filtered memory rows. Explicit approval produced `feb0f7ab-798e-4237-9618-d8aeecc9b9f4`, restarted only Redis, and reached `resolved`, `verified=true` on independent verification attempt four; that investigation completed four tools and loaded five filtered memory rows.
+- Runtime identity checks remained 401 without identity, 403 for an unknown target, 200 on first use, 401 on replay and 404 for the raw route. Live mount inspection found no Docker socket. The migrated verification-policy history retained maximum accepted signed revision 104; this stage introduced no signed-policy revision, so any future strict bundle must use a revision greater than 104.
 
 Latest verification for the isolated Agents SDK repair laboratory stage:
 
@@ -526,7 +539,10 @@ Local entry points:
 - `apps/container-metrics-exporter/app.py`: socketless CPU exporter backed by the runtime executor's trimmed read-only stats route.
 - `apps/promtail/tls_syslog_gateway.py`: client-certificate-enforcing TCP 1514 gateway and loopback-only Promtail relay.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
-- `apps/control-api/opspilot/storage.py`: SQLite schema, normalized audit records, incident snapshots, revision history, and durable peer credential consumption.
+- `apps/control-api/opspilot/storage.py`: compatible SQLite/PostgreSQL stores, normalized audit records, incident snapshots, revision history, durable peer credential consumption, and transactional legacy import.
+- `apps/control-api/opspilot/investigation.py`: resumable investigation lifecycle, aggregate budgets, deterministic context compaction and read-only event-memory integration.
+- `apps/control-api/opspilot/event_memory.py`: metadata-filtered PostgreSQL/pgvector event memory and atomic schema migration.
+- `apps/control-api/opspilot/observability.py`: opt-in Control API OpenTelemetry instrumentation.
 - `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, request-bound peer identity, and bounded multi-node rollout reporter.
 - `apps/policy-distributor/app.py`: authenticated read-only bundle endpoint used by the optional rollout profile.
 - `apps/dashboard/app/page.tsx`: Dashboard behavior and UI.
@@ -544,19 +560,20 @@ Local entry points:
 - `scripts/recover-runtime-dependencies.sh`: actuator-aware local Redis/MySQL/payment recovery helper.
 - `infra/vault-agent/`: minimal read-only policy, atomic KV v2 template, and AppRole-based host Agent configuration example.
 - `infra/kubernetes/runtime-plane/`: Kustomize package for five workload-scoped placements, Gateway/issuer routing, NetworkPolicies, persistent quarantine state, and shared PostgreSQL.
+- `infra/otel-collector/` and `infra/tempo/`: OTLP Trace collection, forwarding, local retention and query configuration.
 - `scripts/validate-runtime-identity.py` and `scripts/validate-orchestrator-runtime.py`: repeatable default and cross-broker identity/replay acceptance.
 - `tests/test_workflow.py`: approval, policy allow/deny, Redis-path, graph inspection, inconclusive RCA, verification failure, and stale-log precedence tests.
 
 ## Current limitations
 
-- LangGraph provides orchestration and process-local checkpointed state. A local Ollama model can now perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab is intentionally a fixed demonstration target, not a general production Shell.
-- SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
-- Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
-- Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
+- LangGraph orchestration checkpoints remain process-local, while the SDK investigation lifecycle is now resumable from PostgreSQL. A local Ollama model can perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab remains a fixed demonstration target, not a general production Shell.
+- Shared PostgreSQL removes the default single-node SQLite write constraint, but the Control API has not yet been load-tested as an active-active deployment. SQLite remains only a local fallback.
+- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured; learned memory writing and Skill promotion remain later stages.
+- Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and the shared PostgreSQL Control API store has not yet been load-tested as an active-active production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation uses target-process counters with strict per-service thresholds and health/staleness alerts. The local exporter still polls on scrape, covers only the three business services, and requires recreation to change targets or thresholds; last-success timestamps are process-local and reset when the exporter restarts.
 - Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack has no file discovery, shared target files, or persisted positions. Vault Agent is the first concrete external delivery controller, while the strict downstream contract remains provider-neutral for a future cloud Secret CSI adapter. Vault Agent must run on the Docker host because its successful-render hook invokes the host Docker CLI; production still needs normal host service hardening and a non-dev Vault cluster. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
-- The local Compose path remains fixed and intentionally uses SQLite. The Kubernetes runtime plane supports independently scheduled workload placements and shared PostgreSQL, but no Kubernetes context was configured on this host, so this turn validated deterministic Kustomize rendering plus a live two-broker PostgreSQL profile rather than applying to a real multi-node cluster. Production still needs registry image publication, external Secret provisioning, an HA managed PostgreSQL endpoint, and cluster-level rollout/failure-domain acceptance. Kubernetes containers share a Pod network; the actuator therefore has no TCP listener or ServiceAccount and is protected by Pod NetworkPolicy, but is not a separate network namespace as in Compose. CPU usage remains process-based rather than cgroup-v2 based.
+- The local Compose Control API now uses PostgreSQL/pgvector, while runtime brokers retain their separate SQLite default and optional shared audit PostgreSQL. The Kubernetes runtime plane supports independently scheduled workload placements, but no Kubernetes context was configured on this host. Production still needs registry image publication, external Secret provisioning, an HA managed PostgreSQL endpoint, and cluster-level rollout/failure-domain acceptance. Kubernetes containers share a Pod network; the actuator therefore has no TCP listener or ServiceAccount and is protected by Pod NetworkPolicy, but is not a separate network namespace as in Compose. CPU usage remains process-based rather than cgroup-v2 based.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
 - Authentication and multi-user authorization are not implemented.
 - The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
@@ -765,7 +782,7 @@ Local entry points:
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
-- If active-active Control API deployment is required, move incident/audit persistence to a shared production database and add an external rollout controller or quorum model.
+- Before active-active Control API deployment, load-test the shared PostgreSQL store and add an external rollout controller or quorum model.
 - If another target platform requires it, add a cloud Secret CSI adapter behind the same strict bundle seam; Vault Agent is now the validated concrete controller.
 - Apply the rendered runtime plane to a real multi-node Kubernetes cluster, replace the acceptance PostgreSQL StatefulSet with managed HA PostgreSQL, publish immutable images/Secrets through the deployment system, and validate node loss plus placement rescheduling without replay/audit gaps.
 
@@ -773,4 +790,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stages 1-2 implement optional Agents SDK investigation plus an isolated repair lab with generated allowlisted diagnostic scripts, independent config prevalidation, immutable packages, explicit digest-bound approval, replay prevention and rollback. Local Qwen3.5 completed the real proposal/approval/verification flow; 141 backend tests and deterministic repair-lab acceptance passed. Next implement Stage 3: resumable checkpoints, aggregate budgets, deterministic context compaction, PostgreSQL/pgvector memory and OpenTelemetry Trace. Do not claim these Stage 3 capabilities or Skills evolution as implemented yet. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout is optional and not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stages 1-3 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, shared PostgreSQL incident/audit/Skill-version persistence, filtered pgvector event memory, and OpenTelemetry Collector plus Tempo Trace. Next implement Stage 4 candidate Skill promotion in an isolated branch/workspace with frozen trigger cases, regression/counterexample evaluation, parent/rollback pointers and explicit promotion. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.

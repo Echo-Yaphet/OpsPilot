@@ -312,6 +312,9 @@ class Settings(BaseSettings):
     executor_identity_ttl_seconds: int = 10
     executor_gateway_timeout: float = 15
     database_path: str = "/data/opspilot.db"
+    database_url: str | None = None
+    memory_database_url: str | None = None
+    service_version: str = "local-compose-v1"
     embedding_base_url: str | None = None
     embedding_model: str | None = None
     embedding_api_key: str = ""
@@ -325,6 +328,7 @@ class Settings(BaseSettings):
     investigation_max_turns: int = Field(default=5, ge=1, le=12)
     investigation_max_tool_calls: int = Field(default=6, ge=1, le=20)
     investigation_timeout: float = Field(default=120, gt=0, le=300)
+    investigation_max_total_tokens: int = Field(default=4096, ge=256, le=65536)
     repair_mode: Literal["disabled", "agents_sdk"] = "disabled"
     repair_sandbox_url: str | None = None
     repair_sandbox_token: str = ""
@@ -361,6 +365,14 @@ class Settings(BaseSettings):
     def validate_verification_policies(self):
         if self.investigation_mode == "agents_sdk" and not (self.llm_base_url and self.llm_model):
             raise ValueError("agents_sdk investigation requires an LLM URL and model")
+        if self.memory_database_url and not self.memory_database_url.startswith(
+            ("postgresql://", "postgresql+psycopg://")
+        ):
+            raise ValueError("memory database URL must use PostgreSQL")
+        if self.database_url and not self.database_url.startswith(
+            ("postgresql://", "postgresql+psycopg://")
+        ):
+            raise ValueError("database URL must use PostgreSQL")
         repair_values = (self.repair_sandbox_url, self.repair_sandbox_token, self.repair_approval_key)
         if any(repair_values) and not all(repair_values):
             raise ValueError("repair sandbox URL, token and approval key must be configured together")

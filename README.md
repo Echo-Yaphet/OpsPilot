@@ -182,6 +182,8 @@ infra/
   prometheus/         抓取与告警规则
   grafana/            数据源自动配置
   loki/               Loki 与 Promtail 配置
+  otel-collector/     OTLP Trace 接收与 Tempo 转发
+  tempo/              本地 Trace 存储与查询
 scripts/
   faults/             三种故障注入
 tests/                Agent 闭环与安全门测试
@@ -191,11 +193,17 @@ tests/                Agent 闭环与安全门测试
 
 自主调查升级已提供可选入口：配置 Ollama 后设置 `INVESTIGATION_MODE=agents_sdk`，
 Coordinator 将使用 OpenAI Agents SDK 的真实工具循环，按观察结果选择服务健康、
-容器状态、依赖指标或错误日志。工具目标绑定当前服务，调用次数、轮数与总时限受限；
-部分调查轨迹持久化到 SQLite，结果沿用 `llm_investigation` evidence。
+容器状态、依赖指标或错误日志。工具目标绑定当前服务，调用次数、轮数、聚合 token 与总时限受限；
+调查在每次只读探针前后写入可恢复 checkpoint，进程中断后沿用同一 run ID、累计预算和已完成观察，
+结果继续使用 `llm_investigation` evidence。确定性上下文压缩固定保留 evidence 哈希引用、反证、
+动作结果和未决问题，不由模型改写。
 该模式目前只替换 Coordinator 调查阶段，RCA/Solution/Verification 继续使用原有流程。
 默认 `legacy` 模式保持兼容，模型与工具失败继续降级至强制指标/日志取证。
-隔离 Shell/Filesystem 修复实验和故障副本补丁验证已实现；可恢复检查点、pgvector、Trace 和 Skills 晋级尚未实现；
+隔离 Shell/Filesystem 修复实验和故障副本补丁验证已实现。默认 Compose 现使用共享 PostgreSQL
+保存 Incident、审计、调查生命周期及未来 Skill 版本注册表，并从原 SQLite 做事务化一次迁移；SQLite
+仍是可用 fallback。事件记忆先按服务、服务版本、条件和过期时间过滤，再使用 pgvector 排序。
+Control API 与三个业务服务通过 OpenTelemetry Collector 写入 Tempo，Grafana 已配置 Tempo 数据源；
+Trace 尚未暴露为模型工具，Skills 晋级留在 Stage 4；
 分阶段实施与验收条件见 [Agent 演进路线图](docs/agent-evolution-roadmap.md)。
 
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。

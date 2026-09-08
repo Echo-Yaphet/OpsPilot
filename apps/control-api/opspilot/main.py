@@ -13,6 +13,9 @@ from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .llm import OllamaIncidentAnalyzer
 from .investigation import InvestigationBudget, InvestigationJournal, SDKInvestigator
+from .investigation import PostgresInvestigationJournal
+from .event_memory import PostgresEventMemory
+from .observability import instrument_fastapi
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
 from .policy_distribution import (
     VerificationPolicyPeerAuthenticator,
@@ -27,26 +30,31 @@ from .repair import (
     RepairSandboxClient,
     SDKRepairAgent,
 )
-from .storage import IncidentStore
+from .storage import IncidentStore, PostgresIncidentStore
 from .tools import LiveOpsTools
 from .workflow import IncidentWorkflow
 
 app = FastAPI(title="OpsPilot Control API", version="0.1.0")
+instrument_fastapi(app, "opspilot-control-api")
 tools = LiveOpsTools(settings)
-store = IncidentStore(settings.database_path)
+store = (PostgresIncidentStore(settings.database_url, settings.database_path)
+         if settings.database_url else IncidentStore(settings.database_path))
 knowledge_retriever = store
+embedding_provider = None
 if settings.embedding_base_url and settings.embedding_model:
+    embedding_provider = OpenAICompatibleEmbeddingProvider(
+        settings.embedding_base_url,
+        settings.embedding_model,
+        settings.embedding_api_key,
+        settings.embedding_timeout,
+    )
     knowledge_retriever = SemanticKnowledgeRetriever(
         fallback=store,
         corpus=store,
-        embeddings=OpenAICompatibleEmbeddingProvider(
-            settings.embedding_base_url,
-            settings.embedding_model,
-            settings.embedding_api_key,
-            settings.embedding_timeout,
-        ),
+        embeddings=embedding_provider,
         minimum_similarity=settings.semantic_minimum_similarity,
     )
+event_memory = PostgresEventMemory(settings.memory_database_url) if settings.memory_database_url else None
 verification_policy_provider = VerificationPolicyProvider(
     settings.default_verification_policy(),
     settings.verification_service_policies,
@@ -86,13 +94,18 @@ if settings.llm_base_url and settings.llm_model:
     )
 investigator = None
 if settings.investigation_mode == "agents_sdk":
+    journal = (PostgresInvestigationJournal(settings.memory_database_url)
+               if settings.memory_database_url else InvestigationJournal(settings.database_path))
     investigator = SDKInvestigator(
         tools,
         SDKInvestigator.ollama_model(settings.llm_base_url, settings.llm_model),
-        InvestigationJournal(settings.database_path),
+        journal,
         InvestigationBudget(max_turns=settings.investigation_max_turns,
                             max_tool_calls=settings.investigation_max_tool_calls,
-                            timeout_seconds=settings.investigation_timeout),
+                            timeout_seconds=settings.investigation_timeout,
+                            max_total_tokens=settings.investigation_max_total_tokens),
+        event_memory=event_memory, embeddings=embedding_provider,
+        service_version=settings.service_version,
     )
 repair_agent = None
 if settings.repair_mode == "agents_sdk":
@@ -131,6 +144,14 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "opspilot-control-api"}
+
+
+@app.get("/api/v1/system/memory/status")
+async def memory_status():
+    """Read-only visibility for the optional event-memory backend."""
+    if event_memory is None:
+        return {"backend": "disabled", "healthy": True, "active_events": 0}
+    return event_memory.health()
 
 
 @app.get("/api/v1/verification-policy/status")

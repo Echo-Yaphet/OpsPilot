@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -318,3 +319,174 @@ class IncidentStore:
         results.sort(key=lambda item: item.updated_at, reverse=True)
         results.sort(key=lambda item: item.score, reverse=True)
         return results[:limit]
+
+
+class _PostgresAdapter:
+    """Expose the small sqlite-like connection surface used by IncidentStore."""
+
+    def __init__(self, connection):
+        self.raw = connection
+
+    @staticmethod
+    def _sql(query: str) -> str:
+        return query.replace("?", "%s")
+
+    def execute(self, query: str, parameters=()):
+        return self.raw.execute(self._sql(query), parameters)
+
+    def executemany(self, query: str, parameters):
+        cursor = self.raw.cursor()
+        cursor.executemany(self._sql(query), parameters)
+        return cursor
+
+
+class PostgresIncidentStore(IncidentStore):
+    """Shared PostgreSQL incident/audit store with atomic SQLite bootstrap migration."""
+
+    def __init__(self, dsn: str, legacy_sqlite_path: str | None = None):
+        self.dsn = dsn.replace("postgresql+psycopg://", "postgresql://", 1)
+        self.path = self.dsn
+        self._initialize()
+        if legacy_sqlite_path and Path(legacy_sqlite_path).exists():
+            self._migrate_sqlite_once(legacy_sqlite_path)
+
+    @contextmanager
+    def connection(self):
+        import psycopg
+        from psycopg.rows import dict_row
+
+        with psycopg.connect(self.dsn, row_factory=dict_row) as raw:
+            yield _PostgresAdapter(raw)
+
+    def _initialize(self):
+        statements = [
+            """CREATE TABLE IF NOT EXISTS incidents (
+                incident_id TEXT PRIMARY KEY, alert_key TEXT UNIQUE, service TEXT NOT NULL,
+                symptom TEXT NOT NULL, status TEXT NOT NULL, root_cause TEXT,
+                confidence DOUBLE PRECISION NOT NULL DEFAULT 0, state_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS evidence (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, position INTEGER NOT NULL,
+                source TEXT NOT NULL, summary TEXT NOT NULL, data_json TEXT,
+                UNIQUE(incident_id, position))""",
+            """CREATE TABLE IF NOT EXISTS agent_events (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, position INTEGER NOT NULL,
+                agent TEXT NOT NULL, message TEXT NOT NULL, at TEXT NOT NULL,
+                UNIQUE(incident_id, position))""",
+            """CREATE TABLE IF NOT EXISTS recommendations (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, position INTEGER NOT NULL,
+                title TEXT NOT NULL, command TEXT, risk TEXT NOT NULL,
+                requires_approval INTEGER NOT NULL, UNIQUE(incident_id, position))""",
+            """CREATE TABLE IF NOT EXISTS approvals (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, approved INTEGER NOT NULL,
+                requested_execution INTEGER NOT NULL, created_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS executions (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, command TEXT,
+                result TEXT, created_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS verifications (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, verified INTEGER,
+                result TEXT, created_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS policy_decisions (
+                id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, position INTEGER NOT NULL,
+                allowed INTEGER NOT NULL, reason TEXT NOT NULL, policy TEXT NOT NULL,
+                operation TEXT, target TEXT, command TEXT, created_at TEXT NOT NULL,
+                UNIQUE(incident_id, position))""",
+            """CREATE TABLE IF NOT EXISTS runbooks (
+                runbook_id TEXT PRIMARY KEY, title TEXT NOT NULL, service TEXT NOT NULL,
+                root_cause TEXT NOT NULL, description TEXT NOT NULL, command TEXT,
+                verification TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS verification_policy_revisions (
+                id BIGSERIAL PRIMARY KEY, revision INTEGER, content_digest TEXT NOT NULL,
+                signature_status TEXT NOT NULL, load_result TEXT NOT NULL, observed_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS verification_policy_peer_credentials (
+                credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
+                expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS skill_versions (
+                skill_id TEXT NOT NULL, version INTEGER NOT NULL, payload JSONB NOT NULL,
+                parent_version INTEGER, rollback_version INTEGER, promoted_at TIMESTAMPTZ,
+                PRIMARY KEY(skill_id, version))""",
+            """CREATE TABLE IF NOT EXISTS control_schema_migrations (
+                migration_id TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL)""",
+        ]
+        with self.connection() as db:
+            db.execute("SELECT pg_advisory_xact_lock(675091744)")
+            for statement in statements:
+                db.execute(statement)
+            self._seed_runbooks(db)
+
+    def _migrate_sqlite_once(self, path: str) -> None:
+        source_key = hashlib.sha256(
+            str(Path(path).resolve()).encode() + Path(path).read_bytes()
+        ).hexdigest()[:16]
+        migration_id = f"sqlite-control-v1:{source_key}"
+        table_columns = {
+            "incidents": ("incident_id", "alert_key", "service", "symptom", "status",
+                          "root_cause", "confidence", "state_json", "created_at", "updated_at"),
+            "evidence": ("incident_id", "position", "source", "summary", "data_json"),
+            "agent_events": ("incident_id", "position", "agent", "message", "at"),
+            "recommendations": ("incident_id", "position", "title", "command", "risk",
+                                "requires_approval"),
+            "approvals": ("incident_id", "approved", "requested_execution", "created_at"),
+            "executions": ("incident_id", "command", "result", "created_at"),
+            "verifications": ("incident_id", "verified", "result", "created_at"),
+            "policy_decisions": ("incident_id", "position", "allowed", "reason", "policy",
+                                 "operation", "target", "command", "created_at"),
+            "runbooks": ("runbook_id", "title", "service", "root_cause", "description", "command",
+                         "verification", "enabled", "created_at", "updated_at"),
+            "verification_policy_revisions": ("revision", "content_digest", "signature_status",
+                                                "load_result", "observed_at"),
+            "verification_policy_peer_credentials": ("credential_id", "identity_subject", "expires_at",
+                                                       "consumed_at"),
+        }
+        source = sqlite3.connect(path)
+        source.row_factory = sqlite3.Row
+        try:
+            with self.connection() as target:
+                if target.execute(
+                    "SELECT 1 FROM control_schema_migrations WHERE migration_id=?", (migration_id,)
+                ).fetchone():
+                    return
+                target.execute("SELECT pg_advisory_xact_lock(675091744)")
+                available = {row[0] for row in source.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )}
+                for table, columns in table_columns.items():
+                    if table not in available:
+                        continue
+                    rows = source.execute(
+                        f"SELECT {','.join(columns)} FROM {table}"
+                    ).fetchall()
+                    if not rows:
+                        continue
+                    placeholders = ",".join("?" for _ in columns)
+                    target.executemany(
+                        f"INSERT INTO {table}({','.join(columns)}) VALUES({placeholders}) "
+                        "ON CONFLICT DO NOTHING",
+                        [tuple(row[column] for column in columns) for row in rows],
+                    )
+                target.execute(
+                    "INSERT INTO control_schema_migrations(migration_id, applied_at) VALUES(?, now())",
+                    (migration_id,),
+                )
+        finally:
+            source.close()
+
+    def consume_verification_policy_peer_credential(
+        self, credential_id: str, identity_subject: str, expires_at: int
+    ) -> None:
+        import psycopg
+
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            with self.connection() as db:
+                db.execute("DELETE FROM verification_policy_peer_credentials WHERE expires_at < ?",
+                           (now - 60,))
+                db.execute(
+                    "INSERT INTO verification_policy_peer_credentials(credential_id, identity_subject, "
+                    "expires_at, consumed_at) VALUES(?,?,?,?)",
+                    (credential_id, identity_subject, expires_at,
+                     datetime.now(timezone.utc).isoformat()),
+                )
+        except psycopg.errors.UniqueViolation as exc:
+            raise ValueError("peer credential has already been used") from exc

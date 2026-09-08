@@ -71,6 +71,7 @@ services:
       MYSQL_PASSWORD: opspilot
       MYSQL_DATABASE: opspilot
       REDIS_URL: redis://redis:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["8001:8001"]
     depends_on:
       mysql: {condition: service_healthy}
@@ -103,6 +104,7 @@ services:
       MYSQL_PASSWORD: opspilot
       MYSQL_DATABASE: opspilot
       REDIS_URL: redis://redis:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["8002:8002"]
     depends_on:
       mysql: {condition: service_healthy}
@@ -135,6 +137,7 @@ services:
       MYSQL_PASSWORD: opspilot
       MYSQL_DATABASE: opspilot
       REDIS_URL: redis://redis:6379/0
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["8003:8003"]
     depends_on:
       mysql: {condition: service_healthy}
@@ -161,6 +164,10 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
       DATABASE_PATH: /data/opspilot.db
+      DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@memory-db:5432/opspilot_memory
+      MEMORY_DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@memory-db:5432/opspilot_memory
+      SERVICE_VERSION: ${SERVICE_VERSION:-local-compose-v1}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
       WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
       WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/control-private/private.pem
@@ -178,6 +185,7 @@ services:
       INVESTIGATION_MAX_TURNS: ${INVESTIGATION_MAX_TURNS:-5}
       INVESTIGATION_MAX_TOOL_CALLS: ${INVESTIGATION_MAX_TOOL_CALLS:-6}
       INVESTIGATION_TIMEOUT: ${INVESTIGATION_TIMEOUT:-120}
+      INVESTIGATION_MAX_TOTAL_TOKENS: ${INVESTIGATION_MAX_TOTAL_TOKENS:-4096}
       REPAIR_SANDBOX_URL: ${REPAIR_SANDBOX_URL:-}
       REPAIR_SANDBOX_TOKEN: ${REPAIR_SANDBOX_TOKEN:-}
       REPAIR_APPROVAL_KEY: ${REPAIR_APPROVAL_KEY:-}
@@ -210,7 +218,14 @@ services:
       - control-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
-    depends_on: [prometheus, loki, alertmanager, executor-gateway, workload-identity-issuer]
+    depends_on:
+      prometheus: {condition: service_started}
+      loki: {condition: service_started}
+      alertmanager: {condition: service_started}
+      executor-gateway: {condition: service_started}
+      workload-identity-issuer: {condition: service_started}
+      memory-db: {condition: service_healthy}
+      otel-collector: {condition: service_started}
     networks: [opspilot, repair-control]
 
   policy-distributor:
@@ -624,6 +639,40 @@ services:
       - prometheus-data:/prometheus
     networks: [opspilot, executor-runtime]
 
+  memory-db:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: opspilot_memory
+      POSTGRES_USER: opspilot_memory
+      POSTGRES_PASSWORD: opspilot_memory_local
+    volumes: [memory-data:/var/lib/postgresql/data]
+    networks: [opspilot]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opspilot_memory -d opspilot_memory"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  tempo:
+    image: grafana/tempo:2.7.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./infra/tempo/tempo.yml:/etc/tempo.yml:ro
+      - tempo-data:/var/tempo
+    ports: ["3200:3200"]
+    networks: [opspilot]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes:
+      - ./infra/otel-collector/config.yml:/etc/otelcol/config.yml:ro
+    networks: [opspilot]
+    depends_on: [tempo]
+
   alertmanager:
     <<: *service-common
     image: prom/alertmanager:v0.28.1
@@ -708,3 +757,5 @@ volumes:
   workload-metrics-public: {}
   repair-lab-workspace: {}
   repair-lab-data: {}
+  memory-data: {}
+  tempo-data: {}

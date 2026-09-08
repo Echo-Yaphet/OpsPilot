@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from opspilot import main
 from opspilot.models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
 from opspilot.knowledge import SemanticKnowledgeRetriever
-from opspilot.storage import IncidentStore
+from opspilot.storage import IncidentStore, PostgresIncidentStore
 
 
 class FakeWorkflow:
@@ -87,6 +87,39 @@ def test_incident_list_and_detail_restore_full_timeline(tmp_path, monkeypatch):
     assert detail.json()["events"][0]["message"] == "root cause found"
     assert detail.json()["evidence"][0]["data"] == ["connection refused"]
     assert client.get("/api/v1/incidents/missing").status_code == 404
+
+
+def test_live_postgres_incident_store_and_sqlite_migration(tmp_path):
+    import hashlib
+    import os
+    from uuid import uuid4
+
+    dsn = os.getenv("DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL incident store is not configured")
+    legacy_path = tmp_path / "legacy.db"
+    legacy = IncidentStore(str(legacy_path))
+    incident_id = f"postgres-{uuid4()}"
+    legacy.save(IncidentState(
+        incident_id=incident_id, service="payment-service", symptom="migration probe",
+        status="resolved", root_cause="Redis dependency is unavailable", verified=True,
+    ), alert_key=f"alert-{incident_id}")
+    migration_digest = "sha256:" + hashlib.sha256(incident_id.encode()).hexdigest()
+    legacy.record_verification_policy_revision(42, migration_digest, "invalid", "migration-test")
+
+    postgres = PostgresIncidentStore(dsn, str(legacy_path))
+
+    assert postgres.get(incident_id).verified is True
+    assert postgres.get_by_alert_key(f"alert-{incident_id}").incident_id == incident_id
+    with postgres.connection() as db:
+        assert db.execute(
+            "SELECT count(*) AS count FROM verification_policy_revisions "
+            "WHERE revision=? AND content_digest=? AND load_result=?",
+            (42, migration_digest, "migration-test"),
+        ).fetchone()["count"] == 1
+    assert postgres.retrieve_runbooks(
+        "payment-service", "Redis unavailable", "Redis dependency is unavailable"
+    )[0].runbook_id == "redis-dependency-recovery-v1"
 
 
 def test_manual_analysis_remains_compatible_and_records_approval(tmp_path, monkeypatch):

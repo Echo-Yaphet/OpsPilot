@@ -13,17 +13,21 @@ Mandatory workflow evidence collection remains independent of model choices.
 Configure `LLM_BASE_URL`, `LLM_MODEL`, and `INVESTIGATION_MODE=agents_sdk`.
 The current adapter uses Ollama's OpenAI-compatible Chat Completions endpoint,
 does not send data to OpenAI, disables SDK trace export, and disables client retries.
-`INVESTIGATION_MAX_TURNS` (5), `INVESTIGATION_MAX_TOOL_CALLS` (6), and
-`INVESTIGATION_TIMEOUT` (120 seconds) bound each run. A busy investigator rejects
+`INVESTIGATION_MAX_TURNS` (5), `INVESTIGATION_MAX_TOOL_CALLS` (6),
+`INVESTIGATION_MAX_TOTAL_TOKENS` (4096), and `INVESTIGATION_TIMEOUT` (120 seconds)
+bound each lifecycle. A busy investigator rejects
 new model work immediately; degraded SDK runs skip downstream model RCA and
 verification explanations while deterministic investigation/recovery continues.
-Each model response is limited to 512 output tokens. This is not a hard aggregate
-input-token or monetary budget. A provider may continue generation after cancellation.
+Each model response is limited to 512 output tokens. Persisted aggregate usage gates
+resume admission and reduces remaining output allowance. The provider reports input
+usage only after a request, so one admitted request can cross the aggregate threshold;
+a provider may also continue generation after cancellation.
 
 `llm_investigation` evidence includes model, run ID, observations, elapsed time,
-termination status and successful-run token usage. Partial observations are written
-to SQLite `investigation_runs` before and after each probe. A process crash can leave
-a `running` record: this is an investigation journal, not a resumable checkpoint.
+termination status and current plus aggregate token usage. Partial observations are
+checkpointed before and after each probe. A process crash leaves a `running` record;
+the next matching incident resumes the same run ID, accumulated tool/token budgets,
+completed observations and deterministic compacted context.
 SDK investigation summaries do not control commands, targets or verified results.
 Only completed, untruncated tool observations feed the existing RCA adapter.
 
@@ -51,12 +55,22 @@ approval replay, initial 503 and repaired 200 health, plus effective container i
 
 ## Stage 3: harness and memory
 
-Persist resumable SDK state and lifecycle separately from completed incident snapshots.
-Add aggregate token accounting/admission and deterministic context compaction that
-retains evidence references, counterevidence, action outcomes and open questions.
-Migrate incident/journal/skill persistence to PostgreSQL with migration and rollback
-tests; use pgvector only after filtering service version, conditions and expiry.
-Add service OpenTelemetry instrumentation, Collector and Tempo before exposing Trace tools.
+Implemented. Resumable SDK lifecycle is persisted separately from completed incident
+snapshots and carries one run ID across process interruption. Aggregate tool/token
+budgets are enforced across resumes. Deterministic compaction retains content-addressed
+evidence references, counterevidence, action outcomes and open questions.
+
+The default Compose control plane uses shared PostgreSQL for incidents, normalized
+audit rows, investigation checkpoints and the future `skill_versions` registry. Startup
+performs an advisory-lock-protected, one-time SQLite import in one transaction; tests
+cover real migration and failed-DDL rollback. SQLite remains a supported local fallback.
+Event memory uses pgvector only after SQL filters for service, service version, conditions
+and expiry. Missing embeddings retain filtered recency ordering and memory failure never
+blocks deterministic investigation.
+
+Control API plus all three business services emit OTLP traces to an OpenTelemetry
+Collector, which exports to Tempo. Grafana provisions Tempo as a read-only data source.
+No Trace tool is exposed to the model yet; Trace remains observability, not authority.
 
 ## Stage 4: candidate skill promotion
 

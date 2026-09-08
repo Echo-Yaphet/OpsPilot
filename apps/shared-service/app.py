@@ -17,6 +17,28 @@ log = logging.getLogger(SERVICE)
 app = FastAPI(title=SERVICE)
 app.mount("/metrics", make_asgi_app())
 
+
+def configure_tracing() -> None:
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "").rstrip("/")
+    if not endpoint:
+        return
+    from opentelemetry import trace
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    provider = TracerProvider(resource=Resource.create({"service.name": SERVICE}))
+    provider.add_span_processor(BatchSpanProcessor(
+        OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")
+    ))
+    trace.set_tracer_provider(provider)
+    FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+
+
+configure_tracing()
+
 REQUESTS = Counter("http_requests_total", "Requests", ["service", "path", "status"])
 LATENCY = Histogram("http_request_duration_seconds", "Latency", ["service", "path"])
 DEPENDENCY = Gauge("dependency_up", "Dependency health", ["service", "dependency"])

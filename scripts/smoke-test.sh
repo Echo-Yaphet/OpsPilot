@@ -1,9 +1,34 @@
 #!/usr/bin/env sh
 set -eu
 curl -fsS http://localhost:8080/health
+memory_status=$(curl -fsS http://localhost:8080/api/v1/system/memory/status)
+case "$memory_status" in
+  *'"backend":"postgresql+pgvector"'*'"healthy":true'*) ;;
+  *)
+    echo "PostgreSQL/pgvector event memory is unavailable" >&2
+    exit 1
+    ;;
+esac
 curl -fsS http://localhost:8001/health
 curl -fsS http://localhost:8002/health
 curl -fsS http://localhost:8003/health
+curl -fsS http://localhost:3200/ready >/dev/null
+trace_attempt=0
+while [ "$trace_attempt" -lt 10 ]; do
+  payment_traces=$(curl -fsS -G http://localhost:3200/api/search \
+    --data-urlencode 'q={ resource.service.name = "payment-service" }')
+  case "$payment_traces" in
+    *'"traceID"'*) break ;;
+    *)
+      trace_attempt=$((trace_attempt + 1))
+      sleep 2
+      ;;
+  esac
+done
+if [ "$trace_attempt" -eq 10 ]; then
+  echo "payment-service traces are unavailable in Tempo" >&2
+  exit 1
+fi
 ./scripts/validate-runtime-log-mtls.py
 for service in user-service order-service payment-service; do
   loki_attempt=0
