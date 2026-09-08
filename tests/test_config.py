@@ -76,6 +76,23 @@ def test_local_llm_configuration_requires_url_and_model_together(monkeypatch):
     assert thinking_settings.llm_think is True
 
 
+def test_repair_agent_configuration_is_all_or_nothing(monkeypatch):
+    for name in ("REPAIR_MODE", "REPAIR_SANDBOX_URL", "REPAIR_SANDBOX_TOKEN",
+                 "REPAIR_APPROVAL_KEY", "LLM_BASE_URL", "LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(ValidationError):
+        Settings(repair_sandbox_url="http://repair-sandbox:8095")
+    with pytest.raises(ValidationError):
+        Settings(repair_mode="agents_sdk", repair_sandbox_url="http://repair-sandbox:8095",
+                 repair_sandbox_token="token", repair_approval_key="key")
+    configured = Settings(
+        llm_base_url="http://host.docker.internal:11434", llm_model="qwen3.5:9b",
+        repair_mode="agents_sdk", repair_sandbox_url="http://repair-sandbox:8095",
+        repair_sandbox_token="token", repair_approval_key="key",
+    )
+    assert configured.repair_mode == "agents_sdk"
+
+
 @pytest.mark.parametrize("kwargs", [
     {"verification_policy_peer_identity_key": ""},
     {"verification_policy_peer_identity_key_id": "bad key"},

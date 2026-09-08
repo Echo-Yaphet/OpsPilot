@@ -6,6 +6,8 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。默认栈已完全移除 Docker socket：Control API 以短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再调用独立身份 broker；broker 只经每目标私有 Unix socket 请求无网络、只具 `CAP_KILL` 的 actuator。每个目标加入对应 actuator 拥有的 PID namespace，因此内核把执行能力限制在单一目标进程。三个业务服务继续由 Docker logging driver 通过 mTLS RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度。
 
+可选 `repair-lab` profile 另提供 OpenAI Agents SDK 驱动的配置修复实验：模型只能在固定故障副本中读取工作区、生成由白名单步骤组成的诊断脚本和 Redis 配置候选。独立 validator 先验证候选，人工批准再绑定 package/base/target/digest/有效期/一次性 `jti`；应用后的独立健康探针失败会自动回滚。该链路不接触默认业务服务或现有 runtime executor。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -79,6 +81,18 @@ Agent 将单个 KV revision 原子渲染到被 Git 忽略的 `work/runtime-log-v
 首次构建需拉取镜像，MySQL 健康检查通过后示例服务才会启动。
 
 如果拉取镜像提示连接 `127.0.0.1:7890` 被拒绝，说明 Docker Desktop 配置了本机代理但代理未监听；启动对应代理或在 Docker Desktop 中关闭该代理后重试 `make up`。
+
+## 隔离配置修复实验
+
+在 `.env` 配置本地 Ollama 以及 `REPAIR_MODE=agents_sdk`、`REPAIR_SANDBOX_URL`、`REPAIR_SANDBOX_TOKEN` 和 `REPAIR_APPROVAL_KEY` 后运行：
+
+```bash
+make repair-lab-validate  # 确定性安全边界与真实故障副本验收
+docker compose up -d --build --wait control-api
+make repair-agent-live   # Qwen3.5 提案 -> 显式批准 -> 独立验证
+```
+
+Control API 暴露 `POST /api/v1/repair-lab/proposals` 和 `POST /api/v1/repair-lab/approvals`。提案接口永不应用配置；批准接口只接受已持久化 package ID 和显式 `approved=true`。repair sandbox 使用非 root 用户、只读根目录、`cap_drop: ALL`、`no-new-privileges`、PID/CPU/内存限制及两个 internal network，且无 Docker socket。模型不能指定生产 target、签署审批、修改 validator/probe 或设置 `verified`。
 
 ## Redis 宕机最小链路验收
 
@@ -156,6 +170,9 @@ apps/
   executor-gateway/   独立执行边界、身份校验、操作白名单与审计
   runtime-executor/   外部身份验证、固定路由、审计与 actuator Unix socket 分发
   runtime-actuator/   无网络、每目标 PID namespace 与 CAP_KILL 强制边界
+  repair-sandbox/     生成并运行白名单诊断脚本、预验证候选与审批绑定应用
+  repair-validator/   独立 Redis 配置范围与连接探针
+  repair-replica/     故意配置错误的可丢弃 payment 故障副本
   container-metrics-exporter/  通过 actuator 的裁剪 stats 路由导出真实 CPU 指标
   shared-service/     三个示例服务共享的最小实现
   user-service/       user-service 容器入口
@@ -178,7 +195,7 @@ Coordinator 将使用 OpenAI Agents SDK 的真实工具循环，按观察结果�
 部分调查轨迹持久化到 SQLite，结果沿用 `llm_investigation` evidence。
 该模式目前只替换 Coordinator 调查阶段，RCA/Solution/Verification 继续使用原有流程。
 默认 `legacy` 模式保持兼容，模型与工具失败继续降级至强制指标/日志取证。
-Shell 沙箱、故障副本补丁验证、可恢复检查点、pgvector、Trace 和 Skills 晋级尚未实现；
+隔离 Shell/Filesystem 修复实验和故障副本补丁验证已实现；可恢复检查点、pgvector、Trace 和 Skills 晋级尚未实现；
 分阶段实施与验收条件见 [Agent 演进路线图](docs/agent-evolution-roadmap.md)。
 
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。

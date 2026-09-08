@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
+.PHONY: up down ps logs test smoke repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -29,6 +29,14 @@ test:
 
 smoke:
 	./scripts/smoke-test.sh
+
+repair-lab-validate:
+	docker compose --profile repair-lab up -d --build repair-lab-redis repair-validator repair-sandbox repair-lab-payment
+	docker compose --profile repair-lab run --rm --no-deps -v ./scripts:/app/scripts:ro control-api python /app/scripts/validate-repair-lab.py
+	python3 scripts/validate-repair-lab-security.py
+
+repair-agent-live:
+	python3 scripts/validate-repair-agent-live.py
 
 runtime-identity-validate:
 	docker compose exec executor-gateway python /app/validate-runtime-identity.py

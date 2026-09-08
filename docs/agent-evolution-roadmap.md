@@ -29,19 +29,25 @@ Only completed, untruncated tool observations feed the existing RCA adapter.
 
 ## Stage 2: sandbox configuration repair
 
-Build a separate laboratory profile containing an intentionally misconfigured
-payment-service replica, a Redis fixture, and an isolated workspace runner.
-Shell and filesystem tools belong only in this runner, not the Control API or
-existing actuators. Restrict mounts, outbound network, resource limits and secrets.
-Do not expose a generic shell on the existing runtime-executor routes.
+Implemented as the opt-in `repair-lab` Compose profile. An intentionally
+misconfigured payment replica, dedicated Redis fixture, independent validator and
+non-root sandbox are isolated from the existing runtime executors. The sandbox has
+a read-only root, no capabilities, no Docker socket, internal-only networks and
+bounded PID/CPU/memory resources.
 
-Demonstrate: reproduce wrong Redis endpoint -> collect evidence -> propose patch ->
-apply to disposable fault replica -> independent connection/health tests -> immutable
-change package -> approval bound to patch digest, target, base version and validation
-result -> controlled application to the lab target -> independent verification/rollback.
-Changes after approval invalidate the package. Model-writable paths exclude probes,
-approval state, policies and test expectations. Test malformed paths, symlinks,
-resource exhaustion, changed base versions, stale/replayed approval and failed probes.
+The SDK Repair Agent can read only the fixed workspace, generate a diagnostic script
+manifest from two allowlisted Shell steps, execute that server-owned script ID and
+submit a typed Redis configuration candidate. It cannot choose a production target,
+approve, apply or declare verification. The validator binds service version and Redis
+endpoint scope and performs a real PING before the sandbox creates an immutable package.
+The Control API persists that package and requires explicit approval; its HMAC credential
+binds package ID/digest, target, base digest, expiry and one-use `jti`. The sandbox repeats
+validation, probes the disposable replica independently and rolls back on failure.
+
+`make repair-lab-validate` covers missing identity, unlisted Shell, generated-script
+path ownership, invalid candidates, invalid signatures, stale/tampered packages,
+approval replay, initial 503 and repaired 200 health, plus effective container isolation.
+`make repair-agent-live` exercises the full local Qwen3.5 proposal and approval path.
 
 ## Stage 3: harness and memory
 

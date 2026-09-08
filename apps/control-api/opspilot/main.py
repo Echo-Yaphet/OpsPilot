@@ -18,6 +18,15 @@ from .policy_distribution import (
     VerificationPolicyPeerAuthenticator,
     VerificationPolicyRolloutReporter,
 )
+from .repair import (
+    RepairApprovalRequest,
+    RepairBudget,
+    RepairError,
+    RepairProposalStore,
+    RepairRequest,
+    RepairSandboxClient,
+    SDKRepairAgent,
+)
 from .storage import IncidentStore
 from .tools import LiveOpsTools
 from .workflow import IncidentWorkflow
@@ -85,6 +94,19 @@ if settings.investigation_mode == "agents_sdk":
                             max_tool_calls=settings.investigation_max_tool_calls,
                             timeout_seconds=settings.investigation_timeout),
     )
+repair_agent = None
+if settings.repair_mode == "agents_sdk":
+    repair_agent = SDKRepairAgent(
+        RepairSandboxClient(settings.repair_sandbox_url, settings.repair_sandbox_token),
+        SDKInvestigator.ollama_model(settings.llm_base_url, settings.llm_model),
+        RepairProposalStore(settings.database_path),
+        settings.repair_approval_key,
+        RepairBudget(
+            max_turns=settings.repair_max_turns,
+            max_tool_calls=settings.repair_max_tool_calls,
+            timeout_seconds=settings.repair_timeout,
+        ),
+    )
 workflow = IncidentWorkflow(tools, investigator=investigator, executor=GatewayExecutor(
     settings.executor_gateway_url,
     settings.workload_identity_issuer_url,
@@ -141,6 +163,28 @@ async def analyze(request: AnalyzeRequest):
         return state
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/repair-lab/proposals")
+async def propose_repair(request: RepairRequest):
+    """Create a prevalidated lab-only package; never applies it."""
+    if repair_agent is None:
+        raise HTTPException(status_code=503, detail="repair lab is disabled")
+    try:
+        return await repair_agent.propose(request.symptom)
+    except RepairError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@app.post("/api/v1/repair-lab/approvals")
+async def approve_repair(request: RepairApprovalRequest):
+    """Apply exactly one persisted package after explicit human approval."""
+    if repair_agent is None:
+        raise HTTPException(status_code=503, detail="repair lab is disabled")
+    try:
+        return await repair_agent.approve(request.package_id, request.approved)
+    except RepairError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
 @app.get("/api/v1/incidents", response_model=list[IncidentState])

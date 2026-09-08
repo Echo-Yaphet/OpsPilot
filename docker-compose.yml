@@ -178,6 +178,13 @@ services:
       INVESTIGATION_MAX_TURNS: ${INVESTIGATION_MAX_TURNS:-5}
       INVESTIGATION_MAX_TOOL_CALLS: ${INVESTIGATION_MAX_TOOL_CALLS:-6}
       INVESTIGATION_TIMEOUT: ${INVESTIGATION_TIMEOUT:-120}
+      REPAIR_SANDBOX_URL: ${REPAIR_SANDBOX_URL:-}
+      REPAIR_SANDBOX_TOKEN: ${REPAIR_SANDBOX_TOKEN:-}
+      REPAIR_APPROVAL_KEY: ${REPAIR_APPROVAL_KEY:-}
+      REPAIR_MODE: ${REPAIR_MODE:-disabled}
+      REPAIR_MAX_TURNS: ${REPAIR_MAX_TURNS:-6}
+      REPAIR_MAX_TOOL_CALLS: ${REPAIR_MAX_TOOL_CALLS:-6}
+      REPAIR_TIMEOUT: ${REPAIR_TIMEOUT:-120}
       VERIFICATION_MAX_ATTEMPTS: ${VERIFICATION_MAX_ATTEMPTS:-6}
       VERIFICATION_CHECK_INTERVAL_SECONDS: ${VERIFICATION_CHECK_INTERVAL_SECONDS:-2}
       VERIFICATION_SERVICE_HEALTH_CONDITION: ${VERIFICATION_SERVICE_HEALTH_CONDITION:-healthy}
@@ -204,6 +211,7 @@ services:
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
     depends_on: [prometheus, loki, alertmanager, executor-gateway, workload-identity-issuer]
+    networks: [opspilot, repair-control]
 
   policy-distributor:
     <<: *service-common
@@ -526,6 +534,86 @@ services:
       - source: runtime-target-init
         target: /usr/local/bin/opspilot-runtime-target-init
 
+  repair-lab-redis:
+    profiles: [repair-lab]
+    image: redis:7.4-alpine
+    user: redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [repair-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  repair-validator:
+    profiles: [repair-lab]
+    build:
+      context: .
+      dockerfile: apps/repair-validator/Dockerfile
+    environment:
+      REPAIR_VALIDATOR_TOKEN: ${REPAIR_VALIDATOR_TOKEN:-opspilot-local-validator-token}
+      REPAIR_ALLOWED_REDIS_HOST: repair-lab-redis
+      REPAIR_ALLOWED_SERVICE_VERSION: payment-lab-v1
+    networks: [repair-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      repair-lab-redis: {condition: service_healthy}
+
+  repair-sandbox:
+    profiles: [repair-lab]
+    build:
+      context: .
+      dockerfile: apps/repair-sandbox/Dockerfile
+    environment:
+      REPAIR_SANDBOX_TOKEN: ${REPAIR_SANDBOX_TOKEN:-opspilot-local-sandbox-token}
+      REPAIR_APPROVAL_KEY: ${REPAIR_APPROVAL_KEY:-opspilot-local-approval-key}
+      REPAIR_VALIDATOR_URL: http://repair-validator:8096
+      REPAIR_VALIDATOR_TOKEN: ${REPAIR_VALIDATOR_TOKEN:-opspilot-local-validator-token}
+      REPAIR_REPLICA_URL: http://repair-lab-payment:8097
+    volumes:
+      - repair-lab-workspace:/lab
+      - repair-lab-data:/data
+    networks: [repair-control, repair-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    depends_on:
+      repair-validator: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8095/health')"]
+      interval: 2s
+      timeout: 1s
+      retries: 15
+
+  repair-lab-payment:
+    profiles: [repair-lab]
+    build:
+      context: .
+      dockerfile: apps/repair-replica/Dockerfile
+    environment:
+      REPAIR_CONFIG_FILE: /lab/active/config.json
+    volumes:
+      - repair-lab-workspace:/lab:ro
+    networks: [repair-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      repair-sandbox: {condition: service_healthy}
+
   prometheus:
     <<: *service-common
     image: prom/prometheus:v3.5.0
@@ -583,6 +671,10 @@ networks:
   opspilot: {}
   executor-runtime:
     internal: true
+  repair-control:
+    internal: true
+  repair-runtime:
+    internal: true
 
 configs:
   runtime-target-init:
@@ -614,3 +706,5 @@ volumes:
   workload-gateway-public: {}
   workload-metrics-private: {}
   workload-metrics-public: {}
+  repair-lab-workspace: {}
+  repair-lab-data: {}

@@ -1,15 +1,15 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-08 (Agents SDK autonomous investigation stage)
+Last updated: 2026-09-08 (isolated Agents SDK repair laboratory stage)
 
 ## Continue from here
 
 Current development direction: implement the resume-driven Agent evolution roadmap
-in `docs/agent-evolution-roadmap.md`. Stage 1 adds an opt-in SDK investigation loop;
-next implement the isolated Redis-configuration repair laboratory and immutable,
-prevalidated change packages. Production Kubernetes rollout is optional, not the
-current resume-project priority. Shell repair, pgvector/Trace, resumable harness,
-context compaction and Skills promotion are not implemented yet.
+in `docs/agent-evolution-roadmap.md`. Stages 1 and 2 now provide an opt-in SDK
+investigation loop plus an isolated Redis-configuration repair laboratory with
+generated diagnostics and immutable, prevalidated change packages. Next implement
+the resumable harness, context compaction and PostgreSQL/pgvector memory plus Trace.
+Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
@@ -141,6 +141,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the isolated Agents SDK repair laboratory stage:
+
+- Added a four-service opt-in `repair-lab` profile: a deliberately broken payment replica, dedicated Redis, independent validator and non-root sandbox. The sandbox has a read-only root, `cap_drop: ALL`, `no-new-privileges`, PID 64, 256 MiB and 0.5 CPU limits, internal-only control/runtime networks and no Docker socket.
+- The SDK Repair Agent exposes only workspace read, a server-owned diagnostic script manifest composed from two allowlisted Shell steps, bound script execution and typed candidate submission. Production target choice, approval signing, application and `verified` remain outside model control. The default remains disabled/recommendation-only.
+- Independent prevalidation binds `payment-lab-v1` to `repair-lab-redis:6379/0` and performs a real Redis PING. Immutable packages bind base/candidate/validation digests. Explicit human approval is HMAC-bound to package ID/digest, target, base digest, 30-second expiry and one-use `jti`; the sandbox repeats validation and independently probes the replica, rolling back on failure.
+- The current-source suite passed 141 tests. Deterministic live validation observed initial replica 503, repaired 200, missing identity 401, unlisted Shell 403, invalid candidate 422, invalid signature 401, replay 401 and tampered/stale binding 409; effective container isolation and absence of Docker socket were inspected from Docker runtime configuration.
+- Real `qwen3.5:9b` completed `read_workspace -> write_diagnostic_script -> run_diagnostic_script -> write_candidate` in 29.401 seconds, produced package `495c6785-ccf4-41df-97eb-91c397c167f5`, and after a separate approval request reached independent `verified=true`. The run used four tools, five model requests, 5,731 input tokens and 370 output tokens; these are individual host measurements, not benchmark averages.
+- Final default-stack smoke passed after restoring Redis, MySQL and the three business services. Recommendation-only incident `92646914-8e4a-4593-a47c-bf5f9095f785` collected four SDK observations, retained the compatible `IncidentState` evidence shape and performed no execution. `pip check` and Compose rendering passed.
 
 Latest verification for the Agents SDK autonomous investigation stage:
 
@@ -540,7 +549,7 @@ Local entry points:
 
 ## Current limitations
 
-- LangGraph provides orchestration and checkpointed state. A local Ollama model can now plan bounded read-only investigation, generate RCA candidates and knowledge-query expansion, draft Solution steps, and explain Verification. Deterministic rules remain authoritative for known signatures, targets, commands, policy, approval, execution, and verification truth. `qwen3.5:9b` improves healthy-evidence interpretation over the prior 1.5B model, but on this host its structured stages can take about 90-95 seconds and trigger the fail-open timeout during a multi-stage Redis analysis.
+- LangGraph provides orchestration and process-local checkpointed state. A local Ollama model can now perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab is intentionally a fixed demonstration target, not a general production Shell.
 - SQLite is appropriate for the single-node local MVP but is not intended for multi-replica Control API deployments.
 - Typed deterministic retrieval, optional embedding-based semantic ranking, incident-time evidence correlation, and an expanded offline quality set are implemented; corpus embedding caches/vector indexes and learned long-term memory are not yet implemented.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and SQLite incident storage prevents active-active Control API writes from being a production topology.
@@ -764,4 +773,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stage 1 implements optional Agents SDK investigation with four bound read-only tools, budgets, busy-model admission, partial SQLite journals and compatible incident evidence. Local Qwen3.5 healthy and approved Redis investigations succeeded; 128 backend tests passed. Next implement Stage 2: an isolated wrong-Redis-configuration fault replica, sandbox script/patch generation, independent prevalidation, immutable approval-bound change packages and controlled lab-target application/rollback. Do not claim Shell repair, Trace, pgvector, resumable checkpoints, context compaction or Skills evolution as implemented. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout is optional and not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stages 1-2 implement optional Agents SDK investigation plus an isolated repair lab with generated allowlisted diagnostic scripts, independent config prevalidation, immutable packages, explicit digest-bound approval, replay prevention and rollback. Local Qwen3.5 completed the real proposal/approval/verification flow; 141 backend tests and deterministic repair-lab acceptance passed. Next implement Stage 3: resumable checkpoints, aggregate budgets, deterministic context compaction, PostgreSQL/pgvector memory and OpenTelemetry Trace. Do not claim these Stage 3 capabilities or Skills evolution as implemented yet. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout is optional and not the current resume-project priority.

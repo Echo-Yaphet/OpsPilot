@@ -13,6 +13,8 @@ COPY apps/container-metrics-exporter ./container-metrics-exporter
 COPY apps/policy-distributor ./policy-distributor
 COPY apps/promtail ./promtail
 COPY apps/workload-identity-issuer ./workload-identity-issuer
+COPY apps/repair-sandbox ./apps/repair-sandbox
+COPY apps/repair-validator ./apps/repair-validator
 COPY docker-compose.yml .gitignore ./
 COPY infra/loki/promtail-config.yml ./infra/loki/promtail-config.yml
 COPY infra/kubernetes ./infra/kubernetes
