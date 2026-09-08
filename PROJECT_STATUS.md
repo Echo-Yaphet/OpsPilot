@@ -1,8 +1,15 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-03 (Qwen3.5 9B local-model evaluation)
+Last updated: 2026-09-08 (Agents SDK autonomous investigation stage)
 
 ## Continue from here
+
+Current development direction: implement the resume-driven Agent evolution roadmap
+in `docs/agent-evolution-roadmap.md`. Stage 1 adds an opt-in SDK investigation loop;
+next implement the isolated Redis-configuration repair laboratory and immutable,
+prevalidated change packages. Production Kubernetes rollout is optional, not the
+current resume-project priority. Shell repair, pgvector/Trace, resumable harness,
+context compaction and Skills promotion are not implemented yet.
 
 1. Read this document and `README.md`.
 2. Run `docker compose ps` and `make smoke` to refresh runtime status.
@@ -134,6 +141,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for the Agents SDK autonomous investigation stage:
+
+- OpenAI Agents SDK 0.22.0 is pinned; `INVESTIGATION_MODE=agents_sdk` replaces only Coordinator planning with a real Runner tool loop over four service-bound read-only tools. Legacy mode remains the repository default. The local `.env` enables SDK investigation with Qwen3.5 9B; SDK tracing is disabled and the model endpoint is local Ollama.
+- A rebuilt suite passed 128 tests with two dependency deprecation warnings. New tests exercise actual SDK Runner behavior against a scripted HTTP model: observation-dependent tool selection, persistent results, tool/turn limits, timeouts, cancellation, unknown tools, target overrides, busy-model admission, unknown services and independent recovery after model degradation. `pip check` passed.
+- Live healthy smoke incident `d206b6f9-5416-4158-8cbc-613842101f08` recorded four SDK tool observations in 16.447 seconds, correctly identified healthy dependencies and counterevidence to the reported symptom, and remained recommendation-only. A separate SDK-only healthy call used two tools and three model requests in 12.917 seconds; these are individual measurements, not benchmark averages.
+- Real Redis recommendation incident `99aabbdd-eaee-45ad-8b07-c3c68399e851` retained deterministic Redis RCA after a 120-second SDK timeout. Concurrent service alerts exposed model queue pressure; busy SDK admissions now degrade immediately, and degraded investigations skip optional downstream RCA/Verification model calls. Missing-approval incident `06bc8c7b-04b6-402b-9adb-a9176f607f4a` was blocked with `model_busy` evidence. Approved incident `411eaefe-b24f-4767-841c-759033e675ee` completed four SDK tools in 31.868 seconds, restarted Redis and reached `resolved`, `verified=true`.
+- Live runtime identity checks remained 401 without identity, 403 for unknown target, 200 on first use, 401 on replay and 404 for the raw route. Compose validation and deployed healthy smoke passed. HTTP and `IncidentState` contracts, mandatory evidence, deterministic targets/commands, approval and verification truth remain unchanged.
+- Final deployed smoke incident `7217ff16-068b-490c-bb51-8c5c8dd8ef75` completed SDK investigation successfully; the separate legacy RCA model returned incomplete JSON and safely fell back. This stage does not solve all local-model output reliability issues. Final dependency health was healthy and Prometheus alerts were empty.
+- `investigation_runs` stores bounded partial observations in the existing SQLite database. It is a journal, not resumable SDK state; crash-interrupted rows may remain `running`. Model usage is recorded on successful runs, not complete failed-run cost accounting. Per-response output limits are not a hard aggregate token budget. Admission is per process and does not serialize legacy model stages or other Ollama clients. These limitations remain explicit in the roadmap.
 
 Latest verification for the Qwen3.5 9B local-model evaluation:
 
@@ -747,4 +764,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Before changing anything, read `AGENTS.md`, `PROJECT_STATUS.md`, and `README.md`, then refresh Git, Compose, and smoke. The default 21-service Compose stack remains socketless and uses local SQLite. Runtime credentials now bind an issuer-allowlisted placement; Gateway/exporter route through a strict target registry; each broker enforces its own target and placement before actuator access. `infra/kubernetes/runtime-plane` renders five independently schedulable workload/actuator/broker Pods with persistent quarantine state, no ServiceAccount tokens, NetworkPolicies, and shared PostgreSQL replay/audit state. Live two-broker acceptance proved cross-instance replay denial and placement/audit attribution; this host had no Kubernetes context, so real multi-node apply/node-loss acceptance remains next. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, Verification revision >104, and protected IDE/system files. Next publish immutable images and external Secrets to a real multi-node cluster, use managed HA PostgreSQL, and validate placement rescheduling/node loss without audit or replay gaps; then rerun full safety acceptance and push.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stage 1 implements optional Agents SDK investigation with four bound read-only tools, budgets, busy-model admission, partial SQLite journals and compatible incident evidence. Local Qwen3.5 healthy and approved Redis investigations succeeded; 128 backend tests passed. Next implement Stage 2: an isolated wrong-Redis-configuration fault replica, sandbox script/patch generation, independent prevalidation, immutable approval-bound change packages and controlled lab-target application/rollback. Do not claim Shell repair, Trace, pgvector, resumable checkpoints, context compaction or Skills evolution as implemented. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout is optional and not the current resume-project priority.

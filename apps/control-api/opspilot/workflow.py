@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Mapping, Protocol, TypedDict
 
@@ -48,6 +49,7 @@ class IncidentWorkflow:
         verification_policies: Mapping[str, VerificationPolicy] | None = None,
         default_verification_policy: VerificationPolicy | None = None,
         verification_policy_provider: VerificationPolicyResolver | None = None,
+        investigator=None,
     ):
         self.tools = tools
         # Keep the original constructor knobs compatible while moving runtime
@@ -64,10 +66,19 @@ class IncidentWorkflow:
         self.executor = executor or RestrictedExecutor(tools)
         self.knowledge_retriever = knowledge_retriever or NoopKnowledgeRetriever()
         self.incident_analyzer = incident_analyzer
+        self.investigator = investigator
         self.graph = self._build_graph()
 
     def event(self, state: IncidentState, agent: AgentName, message: str) -> None:
         state.events.append(AgentEvent(agent=agent, message=message))
+
+    def _model_narrative_allowed(self, state: IncidentState) -> bool:
+        if self.incident_analyzer is None:
+            return False
+        return self.investigator is None or not any(
+            item.source == "llm_investigation" and item.data.get("status") != "completed"
+            for item in state.evidence
+        )
 
     def _build_graph(self):
         builder = StateGraph(WorkflowState)
@@ -115,7 +126,28 @@ class IncidentWorkflow:
         state, request = graph_state["incident"], graph_state["request"]
         plan = None
         observations = []
-        if self.incident_analyzer is not None:
+        if self.investigator is not None:
+            try:
+                report = await self.investigator.investigate(
+                    incident_id=state.incident_id, service=request.service,
+                    symptom=request.symptom,
+                    incident_at=graph_state["evidence_context"]["incident_at_value"],
+                )
+                state.evidence.append(Evidence(
+                    source="llm_investigation", summary="Agents SDK read-only investigation",
+                    data=report,
+                ))
+                for item in report["observations"]:
+                    if item.get("status") == "completed" and not item.get("truncated"):
+                        observations.append({"tool": item["tool"], "result": json.loads(item["result"])})
+                self.event(state, AgentName.COORDINATOR,
+                           f"SDK investigation {report['status']}; mandatory evidence collection continues")
+            except Exception as exc:
+                state.evidence.append(Evidence(
+                    source="llm_investigation", summary="SDK investigation unavailable",
+                    data={"status": "degraded", "error_type": type(exc).__name__},
+                ))
+        elif self.incident_analyzer is not None:
             try:
                 plan = await self.incident_analyzer.plan(
                     service=request.service, symptom=request.symptom,
@@ -292,7 +324,7 @@ class IncidentWorkflow:
             data=[item.model_dump(mode="json") for item in history],
         ))
         llm_analysis = None
-        if self.incident_analyzer is not None:
+        if self._model_narrative_allowed(state):
             baseline_root_cause = state.root_cause
             baseline_confidence = state.confidence
             try:
@@ -448,7 +480,7 @@ class IncidentWorkflow:
             state.evidence.append(Evidence(
                 source="verification", summary="bounded service recovery check", data=result,
             ))
-            if self.incident_analyzer is not None:
+            if self._model_narrative_allowed(state):
                 try:
                     explanation = await self.incident_analyzer.explain_verification(
                         service=request.service, target=target, result=result,

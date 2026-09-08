@@ -172,6 +172,15 @@ tests/                Agent 闭环与安全门测试
 
 ## Agent 与状态模型
 
+自主调查升级已提供可选入口：配置 Ollama 后设置 `INVESTIGATION_MODE=agents_sdk`，
+Coordinator 将使用 OpenAI Agents SDK 的真实工具循环，按观察结果选择服务健康、
+容器状态、依赖指标或错误日志。工具目标绑定当前服务，调用次数、轮数与总时限受限；
+部分调查轨迹持久化到 SQLite，结果沿用 `llm_investigation` evidence。
+该模式目前只替换 Coordinator 调查阶段，RCA/Solution/Verification 继续使用原有流程。
+默认 `legacy` 模式保持兼容，模型与工具失败继续降级至强制指标/日志取证。
+Shell 沙箱、故障副本补丁验证、可恢复检查点、pgvector、Trace 和 Skills 晋级尚未实现；
+分阶段实施与验收条件见 [Agent 演进路线图](docs/agent-evolution-roadmap.md)。
+
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。
 
 当前 `IncidentWorkflow.run()` 是稳定入口，内部使用真实 LangGraph `StateGraph` 编排八个 Agent 节点。默认仍可用确定性 RCA 与修复策略在无模型环境完成验收；配置本地 Ollama 后，Coordinator 会生成有界调查计划并从固定目录中选择额外只读探针，RCA 会生成最多三个带支持/反对证据的候选，Solution 会生成非执行性处置步骤，Verification 会解释确定性验证结果。HTTP 接口、工具 seam 和状态模型保持不变。

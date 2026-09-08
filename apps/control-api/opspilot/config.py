@@ -321,6 +321,10 @@ class Settings(BaseSettings):
     llm_model: str | None = None
     llm_timeout: float = Field(default=90, gt=0, le=300)
     llm_think: bool = False
+    investigation_mode: Literal["legacy", "agents_sdk"] = "legacy"
+    investigation_max_turns: int = Field(default=5, ge=1, le=12)
+    investigation_max_tool_calls: int = Field(default=6, ge=1, le=20)
+    investigation_timeout: float = Field(default=120, gt=0, le=300)
     verification_max_attempts: int = Field(default=6, ge=1, le=60)
     verification_check_interval_seconds: float = Field(default=2, ge=0, le=300)
     verification_service_health_condition: Literal["healthy", "status_ok"] = "healthy"
@@ -348,6 +352,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_verification_policies(self):
+        if self.investigation_mode == "agents_sdk" and not (self.llm_base_url and self.llm_model):
+            raise ValueError("agents_sdk investigation requires an LLM URL and model")
         if not self.workload_identity_issuer_url.startswith(("http://", "https://")):
             raise ValueError("workload identity issuer URL must be HTTP(S)")
         if not self.workload_identity_private_key_file.strip():

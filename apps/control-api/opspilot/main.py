@@ -12,6 +12,7 @@ from .config import VerificationPolicyProvider, settings
 from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .llm import OllamaIncidentAnalyzer
+from .investigation import InvestigationBudget, InvestigationJournal, SDKInvestigator
 from .models import AgentEvent, AgentName, AnalyzeRequest, FaultRequest, IncidentState
 from .policy_distribution import (
     VerificationPolicyPeerAuthenticator,
@@ -74,7 +75,17 @@ if settings.llm_base_url and settings.llm_model:
         settings.llm_timeout,
         settings.llm_think,
     )
-workflow = IncidentWorkflow(tools, executor=GatewayExecutor(
+investigator = None
+if settings.investigation_mode == "agents_sdk":
+    investigator = SDKInvestigator(
+        tools,
+        SDKInvestigator.ollama_model(settings.llm_base_url, settings.llm_model),
+        InvestigationJournal(settings.database_path),
+        InvestigationBudget(max_turns=settings.investigation_max_turns,
+                            max_tool_calls=settings.investigation_max_tool_calls,
+                            timeout_seconds=settings.investigation_timeout),
+    )
+workflow = IncidentWorkflow(tools, investigator=investigator, executor=GatewayExecutor(
     settings.executor_gateway_url,
     settings.workload_identity_issuer_url,
     settings.workload_identity_private_key_file,
