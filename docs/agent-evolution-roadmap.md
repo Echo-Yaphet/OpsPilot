@@ -91,6 +91,10 @@ execution/verification controls remain independent.
 
 ## Stage 5: held-out evaluation
 
+Status: completed on 2026-09-10. See
+[`docs/evaluations/stage5-v2-v3-report.md`](evaluations/stage5-v2-v3-report.md) for the
+formal 64-trial result, integrity controls, cost/latency comparison and limitations.
+
 Split cases by time and topology; do not expose held-out answers to skill generation.
 Fix model, tool access, budgets and baseline. Include combined faults after single-fault
 repair works. Record numerator/denominator, repetitions and latency for all rates.

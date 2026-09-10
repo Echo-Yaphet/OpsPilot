@@ -10,6 +10,8 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 Stage 4 Skill promotion 由 Control API 提供独立注册表：编码 Agent 只能提交类型化诊断指令和非执行型修复指导，并引用服务端冻结的触发案例。候选在独立只读工作区中保存分支名、diff、案例与内容哈希、完整回归/反例结果、父版本和回滚指针；生成候选不会生效。只有携带 `SKILL_PROMOTION_TOKEN` 的独立请求并显式设置 `approved=true` 才能 promotion，通过后的指导也只作为 SDK 调查建议，不能改变探针、策略、target、命令、审批、执行或 `verified`。
 
+Stage 5 通过 `EvaluationRunner.run(plan)` 提供不泄露 expected label 的留出配对评测。正式批次覆盖 16 个冻结场景、v2/v3 两臂和两次重复，共 64 条真实 Compose 试验；共享 seed、交替 arm 顺序、故障指标准入和独立恢复探针避免把环境异常或先后顺序误计为模型效果。完整结果与可用于简历的口径见 [Stage 5 评测报告](docs/evaluations/stage5-v2-v3-report.md)。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -106,6 +108,16 @@ Control API 暴露 `POST /api/v1/repair-lab/proposals` 和 `POST /api/v1/repair-
 - `POST /api/v1/skills/promotions` 是独立操作，只有全量回归/反例通过、父版本仍为当前活动版本且 `approved=true` 时才切换活动版本。
 
 默认冻结集覆盖 Redis/MySQL 原始回归以及“文本提到依赖但事件时指标健康”和无关服务退化等反例。候选无法提交或覆盖案例、预期标签、探针和安全门；工作区清单以 `0400` 保存于持久卷。
+
+## Stage 5 留出配对评测
+
+配置本地 Ollama 后，可运行完整真实故障评测：
+
+```bash
+make evaluate-stage5 STAGE5_REPETITIONS=2 STAGE5_EVALUATION_ID=<unique-id>
+```
+
+评测覆盖 Redis、MySQL、CPU、Redis+MySQL 组合故障、健康反证、回归轨迹及 8 类安全门。失败/超时不会从质量或成本分母删除；基础设施异常保留在原始记录并单独统计。产物写入 `work/stage5-evaluations/<unique-id>/` 且不允许覆盖同名批次。
 
 ## Redis 宕机最小链路验收
 
@@ -216,7 +228,7 @@ Coordinator 将使用 OpenAI Agents SDK 的真实工具循环，按观察结果�
 保存 Incident、审计、调查生命周期及 Skill 候选/晋级版本链，并从原 SQLite 做事务化一次迁移；SQLite
 仍是可用 fallback。事件记忆先按服务、服务版本、条件和过期时间过滤，再使用 pgvector 排序。
 Control API 与三个业务服务通过 OpenTelemetry Collector 写入 Tempo，Grafana 已配置 Tempo 数据源；
-Trace 尚未暴露为模型工具；Stage 4 Skill promotion 已完成，Stage 5 held-out evaluation 尚未实施；
+Trace 尚未暴露为模型工具；Stage 4 Skill promotion 与 Stage 5 held-out paired evaluation 均已完成；
 分阶段实施与验收条件见 [Agent 演进路线图](docs/agent-evolution-roadmap.md)。
 
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。

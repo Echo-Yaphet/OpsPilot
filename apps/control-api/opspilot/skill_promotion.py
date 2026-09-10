@@ -341,6 +341,21 @@ class SkillPromotionService:
 
     def active_instructions(self) -> tuple[int, str]:
         active = self.active()
-        content = SkillContent.model_validate(active["content"])
+        return self._instructions(active)
+
+    @staticmethod
+    def _instructions(version: dict) -> tuple[int, str]:
+        content = SkillContent.model_validate(version["content"])
         rendered = "\n".join(f"- {item.guidance}" for item in content.diagnostic_instructions)
-        return active["version"], rendered
+        return version["version"], rendered
+
+    def instructions_for_version(self, version: int,
+                                 skill_id: str = "incident-diagnosis") -> tuple[int, str]:
+        selected = next(
+            (row for row in self._rows(skill_id)
+             if row["version"] == version and row.get("promoted_at")),
+            None,
+        )
+        if selected is None:
+            raise SkillPromotionError("promoted Skill version not found", 404)
+        return self._instructions(selected)

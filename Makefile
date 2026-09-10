@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
+.PHONY: up down ps logs test smoke evaluate-stage5 repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -25,10 +25,20 @@ logs:
 	docker compose logs -f --tail=100
 
 test:
-	docker compose run --rm -v ./scripts:/app/scripts:ro control-api python -m pytest -q
+	docker compose run --rm -v ./scripts:/app/scripts:ro -v ./apps/shared-service:/app/shared-service:ro control-api python -m pytest -q
 
 smoke:
 	./scripts/smoke-test.sh
+
+evaluate-stage5:
+	mkdir -p work/stage5-evaluations
+	docker compose run --rm --no-deps \
+		-v ./apps/control-api/opspilot:/app/opspilot:ro \
+		-v ./scripts:/app/scripts:ro \
+		-v ./work/stage5-evaluations:/app/evaluation-output \
+		control-api env PYTHONPATH=/app python /app/scripts/run-stage5-evaluation.py \
+		$(if $(STAGE5_REPETITIONS),--repetitions $(STAGE5_REPETITIONS),) \
+		$(if $(STAGE5_EVALUATION_ID),--evaluation-id $(STAGE5_EVALUATION_ID),)
 
 repair-lab-validate:
 	docker compose --profile repair-lab up -d --build repair-lab-redis repair-validator repair-sandbox repair-lab-payment

@@ -59,10 +59,13 @@ async def redis_ok() -> tuple[bool, str]:
 
 async def mysql_ok() -> tuple[bool, str]:
     try:
-        conn = await aiomysql.connect(
-            host=os.getenv("MYSQL_HOST", "mysql"), port=int(os.getenv("MYSQL_PORT", "3306")),
-            user=os.getenv("MYSQL_USER", "opspilot"), password=os.getenv("MYSQL_PASSWORD", "opspilot"),
-            db=os.getenv("MYSQL_DATABASE", "opspilot"), connect_timeout=1,
+        conn = await asyncio.wait_for(
+            aiomysql.connect(
+                host=os.getenv("MYSQL_HOST", "mysql"), port=int(os.getenv("MYSQL_PORT", "3306")),
+                user=os.getenv("MYSQL_USER", "opspilot"), password=os.getenv("MYSQL_PASSWORD", "opspilot"),
+                db=os.getenv("MYSQL_DATABASE", "opspilot"), connect_timeout=1,
+            ),
+            timeout=1,
         )
         conn.close()
         DEPENDENCY.labels(SERVICE, "mysql").set(1)

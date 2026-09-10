@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-09 (Stage 4 candidate Skill promotion)
+Last updated: 2026-09-10 (Stage 5 held-out paired evaluation)
 
 ## Continue from here
 
@@ -8,7 +8,9 @@ Current development direction: continue the resume-driven Agent evolution roadma
 in `docs/agent-evolution-roadmap.md`. Stages 1 through 4 now provide an opt-in SDK
 investigation loop, isolated repair laboratory, resumable lifecycle harness, shared
 PostgreSQL/pgvector memory, OpenTelemetry Trace and approval-gated Skill promotion.
-Next implement Stage 5 held-out evaluation without exposing held-out labels to generation.
+Stage 5 held-out evaluation is complete without exposing held-out labels to generation.
+The next resume-driven node is to address combined-fault planning or expand the repeated
+evaluation sample before making production-quality statistical claims.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
@@ -127,6 +129,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - PostgreSQL event memory applies service, service-version, condition and expiry filters before optional pgvector distance ordering. Missing embeddings use filtered recency ordering, and any memory failure fails open to the mandatory deterministic investigation path.
 - Stage 4 freezes server-owned regression/counterexample trajectories and evaluates typed Skill candidates in isolated read-only workspaces. Candidates retain branch/workspace identity, trigger and case-set hashes, diff, evaluator/result details, parent version and rollback pointer.
 - Candidate content can express only diagnostic matching/guidance and non-executable repair recipes. Authenticated candidate creation never activates content; a separate authenticated `approved=true` promotion rejects failed or stale-parent versions. Promoted guidance remains advisory to SDK investigation and cannot alter probes, gates, commands, targets, approval, execution or verification truth.
+- Stage 5 adds a label-isolated `EvaluationRunner.run(plan) -> EvaluationReport` seam, paired/counterbalanced Skill-version trials, shared seeds, independent recovery probes, Wilson intervals, cost/latency accounting, grouped metrics, streaming checkpoints and non-overwritable JSON/JSONL/Markdown artifacts. The live suite covers 16 frozen CPU, Redis, MySQL, combined-fault, healthy-counterevidence, regression and safety cases.
 
 ### Dashboard
 
@@ -147,6 +150,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for Stage 5 held-out paired evaluation:
+
+- Formal batch `stage5-v2-v3-isolated-r4` completed 64/64 valid trials: 16 frozen cases × two Skill versions × two repetitions. Each arm had 32 trials, with no infrastructure-invalid sample. Plan digest was `sha256:283c04832a568c9ba8e589f41fff9c987bb5e8b9c236e1432c487f93691d7f51`; case-set digest was `sha256:5beda14574c4896eec69e63efda61a4ac3fe5e6a26aa2c9b1bce745e80a1b763`.
+- Both v2 and v3 achieved 10/12 recovery success (83.3%, Wilson 95% CI 55.2%-95.3%), 16/16 RCA accuracy and 16/16 safety interception. Per arm, single-fault recovery was 10/10, healthy counterevidence was 4/4 and combined Redis+MySQL recovery was 0/2 because the deterministic workflow executes only one repair target per incident.
+- The v3 arm had no paired regression among four baseline-passing regression trials, but no recovery-quality gain. It consumed 4,817.9 tokens per success versus 4,396.0 (+9.6%) and averaged 69.637 seconds per successful recovery versus 65.027 seconds (+7.1%); the evidence does not support claiming v3 is better than v2.
+- Early runs exposed a real actuator/MySQL observability gap: `SIGSTOP` allowed TCP establishment while the MySQL handshake stalled, so the health path timed out before setting `dependency_up=0`. A full-await one-second timeout plus a regression test fixed it; live validation then returned `mysql=false` and Prometheus observed zero on its third one-second poll.
+- The rebuilt current-source suite passed all 162 backend tests. Compose rendering, full-stack recreation, runtime status and final smoke passed with Redis/MySQL healthy, all three business services healthy, authenticated mTLS log delivery, Loki ingestion and recommendation-only non-execution.
+- Full evidence and honest resume wording are documented in `docs/evaluations/stage5-v2-v3-report.md`; raw read-only artifacts remain under ignored `work/stage5-evaluations/stage5-v2-v3-isolated-r4/`.
 
 Latest verification for Stage 4 candidate Skill promotion:
 
@@ -579,7 +591,7 @@ Local entry points:
 
 - LangGraph orchestration checkpoints remain process-local, while the SDK investigation lifecycle is now resumable from PostgreSQL. A local Ollama model can perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab remains a fixed demonstration target, not a general production Shell.
 - Shared PostgreSQL removes the default single-node SQLite write constraint, but the Control API has not yet been load-tested as an active-active deployment. SQLite remains only a local fallback.
-- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 4 Skill promotion uses a visible frozen suite; time/topology-split held-out labels, repeated trials, latency and cost-per-success metrics remain Stage 5.
+- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 5 now provides time/topology-oriented held-out labels, paired repetitions, independent probes, latency and cost-per-success metrics. Its current sample is deliberately small (12 recovery trials per arm), and combined Redis+MySQL recovery remains 0/2 per arm because the workflow executes only one repair target per incident.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and the shared PostgreSQL Control API store has not yet been load-tested as an active-active production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation uses target-process counters with strict per-service thresholds and health/staleness alerts. The local exporter still polls on scrape, covers only the three business services, and requires recreation to change targets or thresholds; last-success timestamps are process-local and reset when the exporter restarts.
@@ -801,4 +813,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md` and `docs/agent-evolution-roadmap.md`, then refresh Git and runtime status. Stages 1-4 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, and authenticated Skill candidates with frozen visible regressions/counterexamples, isolated read-only `SKILL.md` workspaces, parent/rollback lineage and separate explicit promotion. Active `incident-diagnosis` Skill version is 3 and rolls back to version 2. Next implement Stage 5 held-out evaluation: split cases by time/topology without exposing held-out answers to generation, freeze model/tools/budgets/baseline, add repetitions/latency/cost metrics and combined faults, and keep recovery success tied to independent probes. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md` and `docs/evaluations/stage5-v2-v3-report.md`, then refresh Git and runtime status. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Formal Stage 5 batch `stage5-v2-v3-isolated-r4` completed 64/64 valid trials; each arm had 10/12 recovery, 16/16 RCA and 16/16 safety interception, while v3 cost more with no quality gain. Next address combined-fault planning (currently 0/2 recovery per arm) or expand repetitions before stronger statistical claims. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.

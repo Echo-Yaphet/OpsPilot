@@ -120,6 +120,23 @@ def test_promoted_diagnostic_guidance_is_versioned_but_advisory(tmp_path):
     assert "docker compose" not in guidance
 
 
+def test_evaluation_can_read_only_an_explicit_promoted_version(tmp_path):
+    registry = service(tmp_path)
+    created = candidate(registry)
+
+    assert registry.instructions_for_version(1)[0] == 1
+    with pytest.raises(SkillPromotionError, match="promoted Skill version"):
+        registry.instructions_for_version(created["version"])
+
+    registry.promote(SkillPromotionRequest(
+        skill_id="incident-diagnosis", version=created["version"], approved=True,
+    ))
+    version, guidance = registry.instructions_for_version(created["version"])
+    assert version == 2
+    assert "advisory" not in guidance.lower()
+    assert "docker compose" not in guidance
+
+
 def test_api_requires_identity_and_separate_explicit_promotion(tmp_path, monkeypatch):
     registry = service(tmp_path)
     monkeypatch.setattr(main, "skill_promotion", registry)
