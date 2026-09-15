@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate verification-policy-rollout-validate verification-policy-controller-resume-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate verification-policy-rollout-validate verification-policy-controller-resume-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -65,6 +65,12 @@ control-api-active-active-validate:
 		$(if $(ACTIVE_ACTIVE_DUPLICATE_DELIVERIES),--duplicate-deliveries $(ACTIVE_ACTIVE_DUPLICATE_DELIVERIES),) \
 		$(if $(ACTIVE_ACTIVE_CONCURRENT_READS),--concurrent-reads $(ACTIVE_ACTIVE_CONCURRENT_READS),) \
 		$(if $(ACTIVE_ACTIVE_CONCURRENCY),--concurrency $(ACTIVE_ACTIVE_CONCURRENCY),)
+
+control-api-fault-domain-validate:
+	test -n "$(STAGE10_EVALUATION_ID)" || (echo "STAGE10_EVALUATION_ID is required" && exit 2)
+	mkdir -p work/fault-domain-evaluations
+	python3 scripts/validate-control-api-fault-domain.py \
+		--evaluation-id $(STAGE10_EVALUATION_ID)
 
 verification-policy-rollout-validate:
 	test -n "$(STAGE8_EVALUATION_ID)" || (echo "STAGE8_EVALUATION_ID is required" && exit 2)

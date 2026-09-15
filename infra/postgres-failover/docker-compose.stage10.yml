@@ -1,0 +1,85 @@
+services:
+  control-api:
+    environment:
+      DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@stage10-memory-db:5432/opspilot_memory
+      MEMORY_DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@stage10-memory-db:5432/opspilot_memory
+      INVESTIGATION_MODE: legacy
+      REPAIR_MODE: disabled
+      LLM_BASE_URL: ""
+      LLM_MODEL: ""
+    networks: [opspilot, repair-control, stage10-db]
+    depends_on:
+      memory-db-stage10-primary: {condition: service_healthy}
+
+  control-api-canary:
+    environment:
+      DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@stage10-memory-db:5432/opspilot_memory
+      MEMORY_DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@stage10-memory-db:5432/opspilot_memory
+      INVESTIGATION_MODE: legacy
+      REPAIR_MODE: disabled
+      LLM_BASE_URL: ""
+      LLM_MODEL: ""
+    ports: ["18080:8080"]
+    networks: [opspilot, stage10-db]
+    depends_on:
+      memory-db-stage10-primary: {condition: service_healthy}
+
+  memory-db-stage10-primary:
+    image: pgvector/pgvector:pg17
+    profiles: [active-active]
+    restart: "no"
+    environment:
+      POSTGRES_DB: opspilot_memory
+      POSTGRES_USER: opspilot_memory
+      POSTGRES_PASSWORD: opspilot_memory_local
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    command:
+      - postgres
+      - -c
+      - hba_file=/etc/opspilot-stage10/pg_hba.conf
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+    volumes:
+      - stage10-primary-data:/var/lib/postgresql/data
+      - ./infra/postgres-failover/stage10-primary-init.sql:/docker-entrypoint-initdb.d/10-replication.sql:ro
+      - ./infra/postgres-failover/pg_hba.conf:/etc/opspilot-stage10/pg_hba.conf:ro
+    networks:
+      stage10-db:
+        aliases: [stage10-memory-db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opspilot_memory -d opspilot_memory"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  memory-db-stage10-standby:
+    image: pgvector/pgvector:pg17
+    profiles: [active-active]
+    restart: "no"
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_REPLICATION_PASSWORD: opspilot_replication_local
+    entrypoint: ["/bin/sh", "/etc/opspilot-stage10/standby-entrypoint.sh"]
+    volumes:
+      - stage10-standby-data:/var/lib/postgresql/data
+      - ./infra/postgres-failover/standby-entrypoint.sh:/etc/opspilot-stage10/standby-entrypoint.sh:ro
+    networks: [stage10-db]
+    depends_on:
+      memory-db-stage10-primary: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opspilot_memory -d opspilot_memory && test -f /var/lib/postgresql/data/standby.signal"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+networks:
+  stage10-db:
+    name: ${STAGE10_NETWORK_NAME:-opspilot-stage10-db}
+
+volumes:
+  stage10-primary-data:
+    name: ${STAGE10_PRIMARY_VOLUME:-opspilot-stage10-primary}
+  stage10-standby-data:
+    name: ${STAGE10_STANDBY_VOLUME:-opspilot-stage10-standby}

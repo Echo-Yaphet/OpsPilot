@@ -20,6 +20,8 @@ Stage 8 新增外置 verification-policy rollout controller。控制器没有 HT
 
 Stage 9 为 rollout controller 增加可验证的中断恢复。候选与节点/canary/quorum 计划绑定为 digest，重启时严格读取 fsync 审计并核对实际 canary/stable 内容；损坏审计或同候选变更计划会 fail-closed。正式批次在 canary 接受后、stable 发布前强制终止 controller，证明 stable 保持旧 revision；replacement 进程重新确认 canary 后只推进一次 stable，最终恢复到 2/2 `converged`。这仍是持久 volume 未丢失的同主机进程恢复，不是 controller HA。完整结果见 [Stage 9 controller 恢复报告](docs/evaluations/stage9-controller-resume-r1-report.md)。
 
+Stage 10 新增可重复的 Control API 数据库故障域演练。正式批次隔离 primary 的数据库网络时，该节点在 15 秒边界内失败关闭，恢复网络后失败 incident 仍为 404，canary 同期保持可写；随后 primary 重新加入。physical-streaming standby 在追平后被提升，稳定数据库别名切换到新主库，两个 Control API 无需重建即恢复写入与跨节点读取，4/4 范围内 incident 保留且无执行/Verification 副作用。这仍是同一 Docker Desktop 主机上的故障域仿真，不是跨主机 HA、自动选主或 SLA。完整结果见 [Stage 10 故障域报告](docs/evaluations/stage10-fault-domain-r5-report.md)。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -169,6 +171,17 @@ make verification-policy-controller-resume-validate \
 ```
 
 验收必须先证明中断时 stable 仍是 baseline，再证明恢复过程不重复发布 canary、会重新确认 canary、最终只推进一次 stable 并达到 2/2 quorum。结果同样写入 `work/policy-rollouts/<unique-id>/`，成功后设为只读且不可覆盖。
+
+## Stage 10 网络分区与 PostgreSQL failover 验收
+
+使用独立临时主/备数据卷运行同主机故障域演练：
+
+```bash
+make control-api-fault-domain-validate \
+  STAGE10_EVALUATION_ID=<unique-id>
+```
+
+验收会隔离一个 Control API 的数据库网络，要求该节点失败关闭而另一节点保持可写，再恢复网络并确认重新加入；随后等待 physical-streaming standby 追平，停止旧主库、提升 standby、移动稳定数据库别名，并要求两个既有 Control API 恢复写入和交叉读取。所有请求均为 recommendation-only。结果写入 `work/fault-domain-evaluations/<unique-id>/` 并设为只读；临时数据库卷/网络会删除，默认 Control API 自动恢复到原 `memory-db`。该命令是本机故障域演练，不替代真实跨主机或托管 PostgreSQL HA 验收。
 
 ## Redis 宕机最小链路验收
 

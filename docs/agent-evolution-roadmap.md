@@ -189,3 +189,26 @@ canary, published stable once and reached 2/2 quorum with no execution or Verifi
 effect. This proves enumerated process-interruption recovery on the same-host Compose topology;
 it does not cover host/volume loss, controller leader election, network partitions, external
 workload identity or PostgreSQL failover.
+
+## Stage 10: database fault-domain rehearsal
+
+Status: completed on 2026-09-16. See
+[`docs/evaluations/stage10-fault-domain-r5-report.md`](evaluations/stage10-fault-domain-r5-report.md).
+
+The validation topology uses a dedicated Docker database network plus isolated temporary
+PostgreSQL primary/standby volumes. Disconnecting one Control API from the database network
+made that node fail closed within the bounded client timeout while the other node continued
+recommendation-only writes. Reconnecting the network restored shared-state visibility without
+recreating the process.
+
+The standby uses physical streaming replication. After its scoped incident set caught up, the
+runner stopped the old primary, promoted the standby, and moved the stable database endpoint
+alias. Both existing Control API processes resumed writes and cross-node reads, all four scoped
+incidents remained present, and no execution or Verification row was created.
+
+This closes the first reproducible local network-partition and PostgreSQL endpoint-failover
+rehearsal, not the real cross-host requirement. It has no automatic leader election, fencing,
+old-primary rejoin, failure-window concurrent writes, managed-service behavior, cross-zone
+latency, RPO/RTO or production SLA result. The next safety node is to replace policy peer and
+controller shared-HMAC identity with external workload identity, then repeat failure-domain
+acceptance on real independent hosts or a managed HA PostgreSQL endpoint.
