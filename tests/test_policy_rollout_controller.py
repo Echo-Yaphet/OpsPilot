@@ -13,6 +13,10 @@ SIGNING_KEY = "rollout-signing-key"
 KEY_ID = "policy-v1"
 
 
+class SimulatedProcessExit(BaseException):
+    pass
+
+
 def load_controller_module():
     path = Path("/app/policy-rollout-controller/controller.py")
     if not path.exists():
@@ -150,6 +154,247 @@ async def test_canary_then_stable_reaches_quorum_and_records_audit(tmp_path):
         "stable_published",
         "quorum_reached",
     ]
+
+
+@pytest.mark.asyncio
+async def test_controller_resumes_after_crash_without_republishing_canary(tmp_path):
+    module = load_controller_module()
+    candidate = tmp_path / "candidate.json"
+    stable = tmp_path / "stable.json"
+    canary = tmp_path / "canary.json"
+    audit = tmp_path / "audit.jsonl"
+    write_bundle(candidate, 105)
+    write_bundle(stable, 104)
+    original_stable = stable.read_bytes()
+
+    async def status(node, _url):
+        path = canary if node == "canary" else stable
+        active = module.validate_bundle(path.read_bytes(), {KEY_ID: SIGNING_KEY})
+        return {
+            "load_result": "accepted",
+            "bundle_revision": active.revision,
+            "content_digest": active.content_digest,
+        }
+
+    def crash_after_canary_acceptance(event):
+        if event == "canary_accepted":
+            raise SimulatedProcessExit()
+
+    first = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=status,
+        timeout_seconds=0.1,
+        poll_interval_seconds=0,
+        audit_file=str(audit),
+        phase_hook=crash_after_canary_acceptance,
+    )
+    with pytest.raises(SimulatedProcessExit):
+        await first.rollout(
+            candidate_path=str(candidate),
+            canary_path=str(canary),
+            stable_path=str(stable),
+            approved=True,
+        )
+
+    assert stable.read_bytes() == original_stable
+    resumed = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=status,
+        timeout_seconds=0.1,
+        poll_interval_seconds=0,
+        audit_file=str(audit),
+    )
+    result = await resumed.rollout(
+        candidate_path=str(candidate),
+        canary_path=str(canary),
+        stable_path=str(stable),
+        approved=True,
+    )
+
+    assert result.pending_nodes == ()
+    assert stable.read_bytes() == candidate.read_bytes()
+    events = [json.loads(line)["event"] for line in audit.read_text().splitlines()]
+    assert events == [
+        "candidate_validated",
+        "canary_published",
+        "canary_accepted",
+        "rollout_resumed",
+        "canary_revalidated",
+        "stable_published",
+        "quorum_reached",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_controller_resumes_after_stable_publish_and_completed_retry_is_idempotent(
+    tmp_path,
+):
+    module = load_controller_module()
+    candidate = tmp_path / "candidate.json"
+    stable = tmp_path / "stable.json"
+    canary = tmp_path / "canary.json"
+    audit = tmp_path / "audit.jsonl"
+    write_bundle(candidate, 105)
+    write_bundle(stable, 104)
+
+    async def status(node, _url):
+        path = canary if node == "canary" else stable
+        active = module.validate_bundle(path.read_bytes(), {KEY_ID: SIGNING_KEY})
+        return {
+            "load_result": "accepted",
+            "bundle_revision": active.revision,
+            "content_digest": active.content_digest,
+        }
+
+    def crash_after_stable_publish(event):
+        if event == "stable_published":
+            raise SimulatedProcessExit()
+
+    first = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=status,
+        timeout_seconds=0.1,
+        poll_interval_seconds=0,
+        audit_file=str(audit),
+        phase_hook=crash_after_stable_publish,
+    )
+    with pytest.raises(SimulatedProcessExit):
+        await first.rollout(
+            candidate_path=str(candidate),
+            canary_path=str(canary),
+            stable_path=str(stable),
+            approved=True,
+        )
+    assert stable.read_bytes() == candidate.read_bytes()
+
+    resumed = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=status,
+        timeout_seconds=0.1,
+        poll_interval_seconds=0,
+        audit_file=str(audit),
+    )
+    result = await resumed.rollout(
+        candidate_path=str(candidate),
+        canary_path=str(canary),
+        stable_path=str(stable),
+        approved=True,
+    )
+    events_after_resume = audit.read_text()
+    assert result.pending_nodes == ()
+    assert [json.loads(line)["event"] for line in events_after_resume.splitlines()] == [
+        "candidate_validated",
+        "canary_published",
+        "canary_accepted",
+        "stable_published",
+        "rollout_resumed",
+        "quorum_reached",
+    ]
+
+    async def unexpected_status(*_):
+        raise AssertionError("completed rollout must not poll nodes again")
+
+    completed_retry = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=unexpected_status,
+        audit_file=str(audit),
+    )
+    repeated = await completed_retry.rollout(
+        candidate_path=str(candidate),
+        canary_path=str(canary),
+        stable_path=str(stable),
+        approved=True,
+    )
+    assert repeated == result
+    assert audit.read_text() == events_after_resume
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_changed_plan_and_corrupt_audit(tmp_path):
+    module = load_controller_module()
+    candidate = tmp_path / "candidate.json"
+    stable = tmp_path / "stable.json"
+    canary = tmp_path / "canary.json"
+    audit = tmp_path / "audit.jsonl"
+    write_bundle(candidate, 105)
+    write_bundle(stable, 104)
+
+    async def status(*_):
+        active = module.validate_bundle(canary.read_bytes(), {KEY_ID: SIGNING_KEY})
+        return {
+            "load_result": "accepted",
+            "bundle_revision": active.revision,
+            "content_digest": active.content_digest,
+        }
+
+    def crash(event):
+        if event == "canary_published":
+            raise SimulatedProcessExit()
+
+    initial = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=status,
+        audit_file=str(audit),
+        phase_hook=crash,
+    )
+    with pytest.raises(SimulatedProcessExit):
+        await initial.rollout(
+            candidate_path=str(candidate),
+            canary_path=str(canary),
+            stable_path=str(stable),
+            approved=True,
+        )
+
+    changed = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=1,
+        status_reader=status,
+        audit_file=str(audit),
+    )
+    with pytest.raises(module.RolloutError, match="plan conflicts"):
+        await changed.rollout(
+            candidate_path=str(candidate),
+            canary_path=str(canary),
+            stable_path=str(stable),
+            approved=True,
+        )
+
+    audit.write_text(audit.read_text() + "{broken\n", encoding="utf-8")
+    same = module.VerificationPolicyRolloutController(
+        signing_keys={KEY_ID: SIGNING_KEY},
+        nodes={"canary": "http://canary", "primary": "http://primary"},
+        canary_nodes=("canary",),
+        quorum=2,
+        status_reader=status,
+        audit_file=str(audit),
+    )
+    with pytest.raises(module.RolloutError, match="audit file is corrupt"):
+        await same.rollout(
+            candidate_path=str(candidate),
+            canary_path=str(canary),
+            stable_path=str(stable),
+            approved=True,
+        )
 
 
 @pytest.mark.asyncio

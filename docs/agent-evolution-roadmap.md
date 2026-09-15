@@ -168,3 +168,24 @@ This is bounded coordination, not distributed consensus. The local acceptance us
 same-host processes, a shared HMAC peer key and a single distributor/volume. Real host loss,
 network partitions, controller failover, cross-zone timing and managed PostgreSQL failover
 remain future failure-domain work.
+
+## Stage 9: rollout controller interruption recovery
+
+Status: completed on 2026-09-16. See
+[`docs/evaluations/stage9-controller-resume-r1-report.md`](evaluations/stage9-controller-resume-r1-report.md).
+
+The one-shot controller now binds each approved candidate to a content-addressed rollout
+plan covering revision/digest, node endpoints, canary membership and quorum. Every durable
+phase carries that plan digest. A restarted controller strictly parses the fsync-backed audit,
+rejects corrupt records or a changed plan for the same candidate, reconciles the actual canary
+and stable bundles, and resumes from the last safe boundary. It revalidates canary acceptance
+before a not-yet-published stable update, skips canary replay when stable already contains the
+candidate, and returns an already committed quorum result idempotently without polling again.
+
+Formal batch `stage9-controller-resume-r1-20260916` terminated the controller immediately
+after durable canary acceptance. At that checkpoint canary held revision `2026091601` while
+stable remained at `2026091600`. The replacement process used the same plan/audit, revalidated
+canary, published stable once and reached 2/2 quorum with no execution or Verification side
+effect. This proves enumerated process-interruption recovery on the same-host Compose topology;
+it does not cover host/volume loss, controller leader election, network partitions, external
+workload identity or PostgreSQL failover.

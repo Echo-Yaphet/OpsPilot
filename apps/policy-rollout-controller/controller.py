@@ -7,6 +7,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Awaitable, Callable, Mapping
 
@@ -24,6 +25,7 @@ from workload_identity import mint_identity
 
 
 StatusReader = Callable[[str, str], Awaitable[dict]]
+PhaseHook = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ class VerificationPolicyRolloutController:
         timeout_seconds: float = 30,
         poll_interval_seconds: float = 1,
         audit_file: str | None = None,
+        phase_hook: PhaseHook | None = None,
     ):
         self.signing_keys = dict(signing_keys)
         self.nodes = dict(nodes)
@@ -100,6 +103,8 @@ class VerificationPolicyRolloutController:
         self.timeout_seconds = timeout_seconds
         self.poll_interval_seconds = poll_interval_seconds
         self.audit_file = Path(audit_file) if audit_file else None
+        self.phase_hook = phase_hook
+        self._plan_digest: str | None = None
         if not self.nodes:
             raise RolloutError("at least one rollout node is required")
         if not self.canary_nodes or any(node not in self.nodes for node in self.canary_nodes):
@@ -118,12 +123,63 @@ class VerificationPolicyRolloutController:
             "event": event,
             "revision": bundle.revision,
             "digest": bundle.content_digest,
+            **({"plan_digest": self._plan_digest} if self._plan_digest else {}),
             **details,
         }
         with self.audit_file.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+
+    def _record(self, event: str, bundle: SignedVerificationPolicyBundle, **details) -> None:
+        self._audit(event, bundle, **details)
+        if self.phase_hook is not None:
+            self.phase_hook(event)
+
+    def _rollout_plan_digest(self, bundle: SignedVerificationPolicyBundle) -> str:
+        plan = {
+            "revision": bundle.revision,
+            "digest": bundle.content_digest,
+            "nodes": sorted(self.nodes.items()),
+            "canary_nodes": sorted(self.canary_nodes),
+            "quorum": self.quorum,
+        }
+        encoded = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+        return f"sha256:{sha256(encoded).hexdigest()}"
+
+    def _resume_events(self, bundle: SignedVerificationPolicyBundle) -> tuple[str, ...]:
+        if self.audit_file is None or not self.audit_file.exists():
+            return ()
+        matching: list[str] = []
+        for line_number, line in enumerate(
+            self.audit_file.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RolloutError(
+                    f"audit file is corrupt at line {line_number}: {exc.msg}"
+                ) from exc
+            if not isinstance(entry, dict):
+                raise RolloutError(f"audit file entry {line_number} must be an object")
+            if (
+                entry.get("revision") != bundle.revision
+                or entry.get("digest") != bundle.content_digest
+            ):
+                continue
+            recorded_plan = entry.get("plan_digest")
+            if recorded_plan is None:
+                continue
+            if recorded_plan != self._plan_digest:
+                raise RolloutError(
+                    "rollout plan conflicts with the durable audit for this candidate"
+                )
+            event = entry.get("event")
+            if isinstance(event, str):
+                matching.append(event)
+        return tuple(matching)
 
     @staticmethod
     def _atomic_write(path: Path, content: bytes) -> None:
@@ -225,19 +281,66 @@ class VerificationPolicyRolloutController:
             raise RolloutError("explicit rollout approval is required")
         content = Path(candidate_path).read_bytes()
         bundle = validate_bundle(content, self.signing_keys)
-        self._audit("candidate_validated", bundle, approved=True)
+        self._plan_digest = self._rollout_plan_digest(bundle)
+        resume_events = self._resume_events(bundle)
+        if not resume_events:
+            self._record("candidate_validated", bundle, approved=True)
+        elif "quorum_reached" in resume_events:
+            stable = Path(stable_path)
+            if not self._check_revision(stable, bundle):
+                raise RolloutError("durable quorum result conflicts with the stable bundle")
+            entries = [
+                json.loads(line)
+                for line in self.audit_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            completed = next(
+                entry
+                for entry in reversed(entries)
+                if entry.get("event") == "quorum_reached"
+                and entry.get("revision") == bundle.revision
+                and entry.get("digest") == bundle.content_digest
+                and entry.get("plan_digest") == self._plan_digest
+            )
+            return RolloutResult(
+                state="quorum_committed",
+                revision=bundle.revision,
+                digest=bundle.content_digest,
+                accepted_nodes=tuple(completed.get("accepted_nodes", ())),
+                pending_nodes=tuple(completed.get("pending_nodes", ())),
+                quorum=self.quorum,
+            )
+        else:
+            self._record(
+                "rollout_resumed",
+                bundle,
+                last_durable_event=resume_events[-1],
+            )
         try:
             stable = Path(stable_path)
             already_stable = self._check_revision(stable, bundle)
             if not already_stable:
-                self._atomic_write(Path(canary_path), content)
-                self._audit("canary_published", bundle, nodes=list(self.canary_nodes))
+                canary = Path(canary_path)
+                try:
+                    canary_bundle = validate_bundle(canary.read_bytes(), self.signing_keys)
+                    already_canary = (
+                        canary_bundle.revision == bundle.revision
+                        and canary_bundle.content_digest == bundle.content_digest
+                    )
+                except (FileNotFoundError, RolloutError):
+                    already_canary = False
+                if not already_canary:
+                    self._atomic_write(canary, content)
+                    self._record("canary_published", bundle, nodes=list(self.canary_nodes))
                 accepted, _ = await self._wait_for(
                     self.canary_nodes, bundle, len(self.canary_nodes)
                 )
-                self._audit("canary_accepted", bundle, nodes=list(accepted))
+                canary_event = (
+                    "canary_revalidated" if "canary_accepted" in resume_events else "canary_accepted"
+                )
+                self._record(canary_event, bundle, nodes=list(accepted))
                 self._atomic_write(stable, content)
-                self._audit("stable_published", bundle)
+                self._record("stable_published", bundle)
 
             node_ids = tuple(sorted(self.nodes))
             accepted, pending = await self._wait_for(node_ids, bundle, self.quorum)
@@ -249,7 +352,7 @@ class VerificationPolicyRolloutController:
                 pending_nodes=pending,
                 quorum=self.quorum,
             )
-            self._audit("quorum_reached", bundle, **result.as_dict())
+            self._record("quorum_reached", bundle, **result.as_dict())
             return result
         except Exception as exc:
             self._audit("rollout_failed", bundle, error=str(exc))
@@ -323,6 +426,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--poll-interval", type=float, default=1)
     parser.add_argument("--request-timeout", type=float, default=2)
+    parser.add_argument(
+        "--interrupt-after",
+        choices=("candidate_validated", "canary_published", "canary_accepted", "stable_published"),
+        help="test-only crash injection after the named durable phase",
+    )
     return parser.parse_args()
 
 
@@ -350,6 +458,10 @@ async def _main() -> None:
         ),
         request_timeout_seconds=args.request_timeout,
     )
+    def interrupt_after(event: str) -> None:
+        if event == args.interrupt_after:
+            os._exit(75)
+
     controller = VerificationPolicyRolloutController(
         signing_keys=signing_keys,
         nodes=nodes,
@@ -359,6 +471,7 @@ async def _main() -> None:
         timeout_seconds=args.timeout,
         poll_interval_seconds=args.poll_interval,
         audit_file=args.audit_file,
+        phase_hook=interrupt_after if args.interrupt_after else None,
     )
     result = await controller.rollout(
         candidate_path=args.candidate,

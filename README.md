@@ -18,6 +18,8 @@ Stage 7 已补做共享 Control API/PostgreSQL active-active 压测。两个 Con
 
 Stage 8 新增外置 verification-policy rollout controller。控制器没有 HTTP 写接口，只接受已签名 bundle 和显式 rollout 批准；它先独立验证 key ID、HMAC、digest、严格 schema 与 revision，再原子发布 canary。只有全部 canary 精确接受 revision/digest 后才发布 stable，随后按显式 quorum 判定提交并 `fsync` 审计。失败不会让模型获得策略、target、审批、执行或 `verified` 权限。正式本机批次完成 canary→stable→2/2 quorum，并保留一次“canary 失败时 stable 未推进”的失败批次证据；这仍不是分布式共识或生产 HA 结论。完整结果见 [Stage 8 rollout 报告](docs/evaluations/stage8-policy-rollout-r2-report.md)。
 
+Stage 9 为 rollout controller 增加可验证的中断恢复。候选与节点/canary/quorum 计划绑定为 digest，重启时严格读取 fsync 审计并核对实际 canary/stable 内容；损坏审计或同候选变更计划会 fail-closed。正式批次在 canary 接受后、stable 发布前强制终止 controller，证明 stable 保持旧 revision；replacement 进程重新确认 canary 后只推进一次 stable，最终恢复到 2/2 `converged`。这仍是持久 volume 未丢失的同主机进程恢复，不是 controller HA。完整结果见 [Stage 9 controller 恢复报告](docs/evaluations/stage9-controller-resume-r1-report.md)。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -156,6 +158,17 @@ make verification-policy-rollout-validate \
 ```
 
 验收工具生成独立的本地签名基线与候选，临时把 primary/canary 切换到严格签名的 stable/canary 只读通道，要求 canary 精确接受后才推进 stable，并等待 2/2 quorum。结束后自动恢复默认本地文件模式。原始 plan、候选、逐阶段审计、结果与验证报告写入 `work/policy-rollouts/<unique-id>/`，成功批次会设为只读且不能覆盖。生产使用时应由外部 Secret/部署系统提供签名 key、已签名候选与节点清单，不能沿用本地演示密钥。
+
+## Stage 9 controller 中断恢复验收
+
+在 canary 已确认但 stable 尚未发布时强制终止 controller，再用相同计划与审计启动 replacement：
+
+```bash
+make verification-policy-controller-resume-validate \
+  STAGE9_EVALUATION_ID=<unique-id>
+```
+
+验收必须先证明中断时 stable 仍是 baseline，再证明恢复过程不重复发布 canary、会重新确认 canary、最终只推进一次 stable 并达到 2/2 quorum。结果同样写入 `work/policy-rollouts/<unique-id>/`，成功后设为只读且不可覆盖。
 
 ## Redis 宕机最小链路验收
 

@@ -59,6 +59,44 @@ def prepare(args: argparse.Namespace) -> None:
     )
 
 
+def read_audit(path: str) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def verify_interruption(args: argparse.Namespace) -> None:
+    audit = read_audit(args.audit_file)
+    canary = json.loads(Path(args.canary_bundle).read_text(encoding="utf-8"))
+    stable = json.loads(Path(args.stable_bundle).read_text(encoding="utf-8"))
+    events = [entry.get("event") for entry in audit]
+    checks = {
+        "crashed_after_durable_canary_acceptance": events
+        == ["candidate_validated", "canary_published", "canary_accepted"],
+        "canary_has_candidate": canary.get("revision") == args.candidate_revision,
+        "stable_not_advanced": stable.get("revision") == args.baseline_revision,
+        "plan_digest_present": all(
+            isinstance(entry.get("plan_digest"), str)
+            and entry["plan_digest"].startswith("sha256:")
+            for entry in audit
+        ),
+    }
+    report = {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "events": events,
+        "canary_revision": canary.get("revision"),
+        "stable_revision": stable.get("revision"),
+    }
+    output = Path(args.evidence) / "interruption-checkpoint.json"
+    atomic_write(output, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode())
+    print(json.dumps({"output": str(output), **report}, sort_keys=True))
+    if not report["passed"]:
+        raise SystemExit(1)
+
+
 async def verify(args: argparse.Namespace) -> None:
     async with httpx.AsyncClient(timeout=10) as client:
         rollout_response = await client.get("http://control-api:8080/api/v1/verification-policy/rollout")
@@ -70,7 +108,7 @@ async def verify(args: argparse.Namespace) -> None:
         incident_response = await client.post(
             "http://control-api:8080/api/v1/incidents/analyze",
             json={
-                "incident_id": f"stage8-{args.evaluation_id}",
+                "incident_id": f"policy-rollout-{args.evaluation_id}",
                 "service": "payment-service",
                 "symptom": "policy rollout recommendation-only probe",
                 "execute": False,
@@ -112,6 +150,40 @@ async def verify(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+async def verify_resume(args: argparse.Namespace) -> None:
+    await verify(args)
+    audit = read_audit(args.audit_file)
+    events = [entry.get("event") for entry in audit]
+    expected = [
+        "candidate_validated",
+        "canary_published",
+        "canary_accepted",
+        "rollout_resumed",
+        "canary_revalidated",
+        "stable_published",
+        "quorum_reached",
+    ]
+    stable = json.loads(Path(args.stable_bundle).read_text(encoding="utf-8"))
+    checks = {
+        "durable_resume_sequence": events == expected,
+        "candidate_validated_once": events.count("candidate_validated") == 1,
+        "canary_published_once": events.count("canary_published") == 1,
+        "stable_has_candidate": stable.get("revision") == args.candidate_revision,
+        "one_plan_digest": len({entry.get("plan_digest") for entry in audit}) == 1,
+    }
+    report = {
+        "passed": all(checks.values()),
+        "checks": checks,
+        "events": events,
+        "stable_revision": stable.get("revision"),
+    }
+    output = Path(args.evidence) / "resume-verification.json"
+    atomic_write(output, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode())
+    print(json.dumps({"output": str(output), **report}, sort_keys=True))
+    if not report["passed"]:
+        raise SystemExit(1)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -127,6 +199,19 @@ def parse_args() -> argparse.Namespace:
     verify_parser.add_argument("--evaluation-id", required=True)
     verify_parser.add_argument("--evidence", required=True)
     verify_parser.add_argument("--candidate-revision", required=True, type=int)
+    interruption_parser = subparsers.add_parser("verify-interruption")
+    interruption_parser.add_argument("--evidence", required=True)
+    interruption_parser.add_argument("--audit-file", required=True)
+    interruption_parser.add_argument("--canary-bundle", required=True)
+    interruption_parser.add_argument("--stable-bundle", required=True)
+    interruption_parser.add_argument("--baseline-revision", required=True, type=int)
+    interruption_parser.add_argument("--candidate-revision", required=True, type=int)
+    resume_parser = subparsers.add_parser("verify-resume")
+    resume_parser.add_argument("--evaluation-id", required=True)
+    resume_parser.add_argument("--evidence", required=True)
+    resume_parser.add_argument("--audit-file", required=True)
+    resume_parser.add_argument("--stable-bundle", required=True)
+    resume_parser.add_argument("--candidate-revision", required=True, type=int)
     return parser.parse_args()
 
 
@@ -134,5 +219,9 @@ if __name__ == "__main__":
     arguments = parse_args()
     if arguments.command == "prepare":
         prepare(arguments)
+    elif arguments.command == "verify-interruption":
+        verify_interruption(arguments)
+    elif arguments.command == "verify-resume":
+        asyncio.run(verify_resume(arguments))
     else:
         asyncio.run(verify(arguments))
