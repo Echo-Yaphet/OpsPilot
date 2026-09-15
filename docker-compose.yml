@@ -233,7 +233,7 @@ services:
 
   policy-distributor:
     <<: *service-common
-    profiles: [policy-rollout]
+    profiles: [policy-rollout, active-active]
     build:
       context: .
       dockerfile: apps/policy-distributor/Dockerfile
@@ -245,7 +245,7 @@ services:
 
   control-api-canary:
     <<: *service-common
-    profiles: [policy-rollout]
+    profiles: [policy-rollout, active-active]
     build:
       context: .
       dockerfile: apps/control-api/Dockerfile
@@ -253,10 +253,31 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       LOKI_URL: http://loki:3100
       DATABASE_PATH: /data/opspilot.db
+      DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@memory-db:5432/opspilot_memory
+      MEMORY_DATABASE_URL: postgresql://opspilot_memory:opspilot_memory_local@memory-db:5432/opspilot_memory
+      SERVICE_VERSION: ${SERVICE_VERSION:-local-compose-v1}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       EXECUTOR_GATEWAY_URL: http://executor-gateway:8090
       WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
       WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/control-private/private.pem
       EXECUTOR_IDENTITY_TTL_SECONDS: ${EXECUTOR_IDENTITY_TTL_SECONDS:-10}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_TIMEOUT: ${EMBEDDING_TIMEOUT:-10}
+      SEMANTIC_MINIMUM_SIMILARITY: ${SEMANTIC_MINIMUM_SIMILARITY:-0.75}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+      LLM_THINK: ${LLM_THINK:-false}
+      INVESTIGATION_MODE: ${INVESTIGATION_MODE:-legacy}
+      INVESTIGATION_MAX_TURNS: ${INVESTIGATION_MAX_TURNS:-5}
+      INVESTIGATION_MAX_TOOL_CALLS: ${INVESTIGATION_MAX_TOOL_CALLS:-6}
+      INVESTIGATION_TIMEOUT: ${INVESTIGATION_TIMEOUT:-120}
+      INVESTIGATION_MAX_TOTAL_TOKENS: ${INVESTIGATION_MAX_TOTAL_TOKENS:-4096}
+      SKILL_CASES_FILE: /app/opspilot/skill_cases.json
+      SKILL_WORKSPACE_ROOT: /data/skill-workspaces
+      SKILL_PROMOTION_TOKEN: ${SKILL_PROMOTION_TOKEN:-opspilot-local-skill-promotion}
       VERIFICATION_MAX_ATTEMPTS: ${VERIFICATION_MAX_ATTEMPTS:-6}
       VERIFICATION_CHECK_INTERVAL_SECONDS: ${VERIFICATION_CHECK_INTERVAL_SECONDS:-2}
       VERIFICATION_SERVICE_HEALTH_CONDITION: ${VERIFICATION_SERVICE_HEALTH_CONDITION:-healthy}
@@ -281,7 +302,15 @@ services:
       - control-canary-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
-    depends_on: [prometheus, loki, alertmanager, executor-gateway, policy-distributor]
+    depends_on:
+      prometheus: {condition: service_started}
+      loki: {condition: service_started}
+      alertmanager: {condition: service_started}
+      executor-gateway: {condition: service_started}
+      policy-distributor: {condition: service_started}
+      workload-identity-issuer: {condition: service_started}
+      memory-db: {condition: service_healthy}
+      otel-collector: {condition: service_started}
 
   executor-gateway:
     <<: *service-common

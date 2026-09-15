@@ -58,7 +58,7 @@ def test_alertmanager_webhook_persists_and_deduplicates(tmp_path, monkeypatch):
     assert workflow.calls == 2
     assert len(store.list()) == 1
     assert first.json()["incidents"][0]["execution_requested"] is False
-    assert second.json()["incidents"][0]["incident_id"] == "incident-created-from-alert"
+    assert second.json()["incidents"][0]["incident_id"] == first.json()["incidents"][0]["incident_id"]
     assert workflow.last_context[0] == "alertmanager"
     assert workflow.last_context[1].isoformat() == "2026-08-31T03:00:00+00:00"
 

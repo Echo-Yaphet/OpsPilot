@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-15 (Stage 6 repeated combined-fault evaluation)
+Last updated: 2026-09-15 (Stage 7 active-active shared-store load validation)
 
 ## Continue from here
 
@@ -12,9 +12,10 @@ Stage 5 held-out evaluation is complete without exposing held-out labels to gene
 Stage 6 closes the Redis+MySQL combined-fault gap with deterministic multi-target
 planning, fail-closed batch policy review, ordered execution and joint verification.
 Its first dedicated repeated batch completed 5/5 valid local Compose recoveries while
-checking every safety and verification boundary. The next resume-driven node is to
-exercise the shared Control API store under active-active load or expand the sample and
-topology set before production-quality claims.
+checking every safety and verification boundary. Stage 7 then exercised two Control API
+processes against the shared PostgreSQL store under concurrent unique writes, duplicate
+Alertmanager deliveries and reads. The next resume-driven node is external rollout/quorum
+control or broader failure-domain and topology evaluation before production-quality claims.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
@@ -157,6 +158,15 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for Stage 7 active-active shared-store load:
+
+- Formal batch `stage7-active-active-r2-20260915` completed 364/364 HTTP requests across two Control API processes at concurrency 24: 200 unique recommendation-only writes, 64 concurrent deliveries of one new Alertmanager fingerprint, and 100 overlapping list reads.
+- The duplicate fingerprint converged to one canonical incident. All 200 unique incidents were readable from the opposite node and the canonical duplicate was readable from both nodes, for 202/202 cross-node visibility checks.
+- PostgreSQL contained exactly 200 batch incidents plus one duplicate-alert incident, with zero `state_json` identity mismatches, zero orphan evidence/event/recommendation/policy rows and zero approval/execution/verification side effects.
+- Observed local throughput was 48.811 requests/s; write latency p50/p95/max was 3.661/7.188/7.451 seconds. This is a bounded same-host Compose observation, not a production capacity or SLA claim.
+- The rebuilt current-source suite passed all 174 backend tests. Both Control API images built, the active-active Compose profile rendered and both nodes became healthy.
+- Full evidence and limitations are documented in `docs/evaluations/stage7-active-active-r2-report.md`; raw read-only artifacts remain under ignored `work/active-active-evaluations/stage7-active-active-r2-20260915/`.
 
 Latest verification for Stage 6 combined-dependency recovery:
 
@@ -608,9 +618,9 @@ Local entry points:
 ## Current limitations
 
 - LangGraph orchestration checkpoints remain process-local, while the SDK investigation lifecycle is now resumable from PostgreSQL. A local Ollama model can perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab remains a fixed demonstration target, not a general production Shell.
-- Shared PostgreSQL removes the default single-node SQLite write constraint, but the Control API has not yet been load-tested as an active-active deployment. SQLite remains only a local fallback.
+- Shared PostgreSQL has passed a bounded two-process active-active Compose batch with concurrent writes, duplicate delivery and reads. It has not been tested across hosts, network partitions, PostgreSQL failover, connection-pool exhaustion or availability zones. SQLite remains only a local fallback.
 - Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 5 provides time/topology-oriented held-out labels, paired repetitions, independent probes, latency and cost-per-success metrics, but its historical sample is deliberately small (12 recovery trials per arm). Stage 6 closes the observed Redis+MySQL workflow gap and has a dedicated 5/5 repeated local Compose batch plus deterministic regression coverage; its wide 56.6%-100% interval and single enumerated topology are not proof for arbitrary combined faults or production reliability.
-- Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and the shared PostgreSQL Control API store has not yet been load-tested as an active-active production topology.
+- Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and the bounded same-host active-active result is not a production HA topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation uses target-process counters with strict per-service thresholds and health/staleness alerts. The local exporter still polls on scrape, covers only the three business services, and requires recreation to change targets or thresholds; last-success timestamps are process-local and reset when the exporter restarts.
 - Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack has no file discovery, shared target files, or persisted positions. Vault Agent is the first concrete external delivery controller, while the strict downstream contract remains provider-neutral for a future cloud Secret CSI adapter. Vault Agent must run on the Docker host because its successful-render hook invokes the host Docker CLI; production still needs normal host service hardening and a non-dev Vault cluster. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
@@ -823,7 +833,7 @@ Local entry points:
 - Completed stable typed retrieval results, explainable scoring, verified/resolved historical ranking, and baseline offline evaluation fixtures.
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
-- Before active-active Control API deployment, load-test the shared PostgreSQL store and add an external rollout controller or quorum model.
+- Completed bounded same-host active-active load validation for the shared PostgreSQL store; before production deployment, add an external rollout controller or quorum model and test real failure domains plus PostgreSQL failover.
 - If another target platform requires it, add a cloud Secret CSI adapter behind the same strict bundle seam; Vault Agent is now the validated concrete controller.
 - Apply the rendered runtime plane to a real multi-node Kubernetes cluster, replace the acceptance PostgreSQL StatefulSet with managed HA PostgreSQL, publish immutable images/Secrets through the deployment system, and validate node loss plus placement rescheduling without replay/audit gaps.
 
@@ -831,4 +841,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md`, `docs/evaluations/stage5-v2-v3-report.md` and `docs/evaluations/stage6-combined-r5-report.md`, then refresh Git and runtime status. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification while preserving public interfaces. Formal Stage 5 batch `stage5-v2-v3-isolated-r4` remains historical evidence: each arm had 10/12 recovery, 16/16 RCA and 16/16 safety interception, while v3 cost more with no quality gain. Dedicated Stage 6 batch `stage6-combined-r5-20260915` completed 5/5 valid local recoveries with all ordered-boundary checks, but its Wilson interval remains 56.6%-100%. Next load-test the active-active shared store or expand repetitions/topologies before stronger claims. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md` and the Stage 5-7 reports, then refresh Git and runtime status. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification. Stage 7 adds deterministic Alertmanager identity, transaction-serialized shared snapshots, a two-node active-active profile and a repeatable recommendation-only load runner. Formal batch `stage7-active-active-r2-20260915` passed 364/364 requests, one-fingerprint convergence, 202/202 cross-node reads and all database integrity checks; its 48.811 requests/s and 7.188-second p95 are local observations, not production claims. Next add an external rollout/quorum controller or broaden failure-domain/topology evaluation. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.

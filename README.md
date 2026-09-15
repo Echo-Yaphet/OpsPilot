@@ -14,6 +14,8 @@ Stage 5 通过 `EvaluationRunner.run(plan)` 提供不泄露 expected label 的�
 
 Stage 6 已补齐评测暴露的 Redis+MySQL 组合故障缺口：确定性 RCA 同时识别两个依赖，生成 Redis→MySQL 有序建议；Safety 在执行前逐项审查，任一动作不合法则整批拒绝；显式批准后才通过原有 Gateway/broker/actuator 边界顺序执行，Verification 使用同一不可变策略快照联合检查两个容器、两个依赖指标和业务健康。独立重复评测的首个批次完成 5/5 次真实组合故障恢复，并逐次核对全计划策略审查、执行顺序和联合探针；小样本 Wilson 95% 区间仍为 56.6%–100%，不能外推为生产 SLA。模型仍不能决定 target、顺序、审批、执行或 `verified`。完整结果见 [Stage 6 重复评测报告](docs/evaluations/stage6-combined-r5-report.md)。
 
+Stage 7 已补做共享 Control API/PostgreSQL active-active 压测。两个 Control API 进程共同处理 200 个唯一 recommendation-only 写入、64 次同 fingerprint 并发 webhook 和 100 个交叠读取，364/364 请求成功；重复告警收敛为一个 incident，202/202 次跨节点读取通过，且无 state ID 错配、孤儿子记录或执行副作用。48.811 requests/s 与 7.188 秒写入 p95 仅是本机批次观测，不是生产容量或 SLA。完整结果见 [Stage 7 active-active 报告](docs/evaluations/stage7-active-active-r2-report.md)。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -130,6 +132,17 @@ make evaluate-stage6 STAGE6_REPETITIONS=5 STAGE6_EVALUATION_ID=<unique-id>
 ```
 
 每轮先恢复健康基线，再停止 Redis 和 MySQL，等待 Prometheus 同时观测两个依赖为零，然后执行一次显式批准的确定性工作流。成功必须同时满足组合根因、Redis→MySQL 建议、两项策略均允许、Redis→MySQL 实际执行、工作流 `verified=true`，以及独立服务/容器/依赖探针全部通过。逐轮 checkpoint 会立即 `fsync`，最终只读产物写入 `work/stage6-evaluations/<unique-id>/` 且不可覆盖同名批次。
+
+## Stage 7 active-active 压测
+
+启动两个共享 PostgreSQL 的 Control API 节点并运行 recommendation-only 并发验收：
+
+```bash
+make control-api-active-active-validate \
+  ACTIVE_ACTIVE_EVALUATION_ID=<unique-id>
+```
+
+默认批次包含 40 个唯一写入、16 次同 fingerprint 投递和 20 个交叠读取，并验证跨节点可见性、数据库 cardinality、state ID、孤儿子记录及零执行副作用。可通过 `ACTIVE_ACTIVE_UNIQUE_WRITES`、`ACTIVE_ACTIVE_DUPLICATE_DELIVERIES`、`ACTIVE_ACTIVE_CONCURRENT_READS` 和 `ACTIVE_ACTIVE_CONCURRENCY` 调整规模。产物写入 `work/active-active-evaluations/<unique-id>/`，只读且不可覆盖。
 
 ## Redis 宕机最小链路验收
 

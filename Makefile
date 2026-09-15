@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -50,6 +50,21 @@ evaluate-stage6:
 		control-api env PYTHONPATH=/app python /app/scripts/run-stage6-evaluation.py \
 		--evaluation-id $(STAGE6_EVALUATION_ID) \
 		$(if $(STAGE6_REPETITIONS),--repetitions $(STAGE6_REPETITIONS),)
+
+control-api-active-active-validate:
+	test -n "$(ACTIVE_ACTIVE_EVALUATION_ID)" || (echo "ACTIVE_ACTIVE_EVALUATION_ID is required" && exit 2)
+	mkdir -p work/active-active-evaluations
+	docker compose --profile active-active up -d --build --wait control-api control-api-canary
+	docker compose --profile active-active run --rm --no-deps \
+		-v ./apps/control-api/opspilot:/app/opspilot:ro \
+		-v ./scripts:/app/scripts:ro \
+		-v ./work/active-active-evaluations:/app/evaluation-output \
+		control-api env PYTHONPATH=/app python /app/scripts/validate-control-api-active-active.py \
+		--evaluation-id $(ACTIVE_ACTIVE_EVALUATION_ID) \
+		$(if $(ACTIVE_ACTIVE_UNIQUE_WRITES),--unique-writes $(ACTIVE_ACTIVE_UNIQUE_WRITES),) \
+		$(if $(ACTIVE_ACTIVE_DUPLICATE_DELIVERIES),--duplicate-deliveries $(ACTIVE_ACTIVE_DUPLICATE_DELIVERIES),) \
+		$(if $(ACTIVE_ACTIVE_CONCURRENT_READS),--concurrent-reads $(ACTIVE_ACTIVE_CONCURRENT_READS),) \
+		$(if $(ACTIVE_ACTIVE_CONCURRENCY),--concurrency $(ACTIVE_ACTIVE_CONCURRENCY),)
 
 repair-lab-validate:
 	docker compose --profile repair-lab up -d --build repair-lab-redis repair-validator repair-sandbox repair-lab-payment

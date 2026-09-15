@@ -3,6 +3,7 @@ import hmac
 import hashlib
 import json
 from datetime import datetime, timezone
+from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -244,7 +245,7 @@ async def verification_policy_rollout():
 async def analyze(request: AnalyzeRequest):
     try:
         state = await workflow.run(request)
-        store.save(state, approved=request.approved if request.execute else None)
+        state = store.save(state, approved=request.approved if request.execute else None)
         return state
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -323,7 +324,7 @@ async def alertmanager_webhook(payload: dict):
                     agent=AgentName.COORDINATOR,
                     message="Alertmanager reported that the alert signal recovered",
                 ))
-                store.save(existing, alert_key=key)
+                existing = store.save(existing, alert_key=key)
                 processed.append(existing)
             continue
         request = AnalyzeRequest(
@@ -331,14 +332,18 @@ async def alertmanager_webhook(payload: dict):
             symptom=symptom,
             execute=False,
             approved=False,
-            incident_id=existing.incident_id if existing else None,
+            incident_id=(
+                existing.incident_id
+                if existing
+                else str(uuid5(NAMESPACE_URL, f"opspilot:alert:{key}"))
+            ),
         )
         request.set_evidence_context(alert_started_at(alert), "alertmanager")
         try:
             state = await workflow.run(request)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        store.save(state, alert_key=key)
+        state = store.save(state, alert_key=key)
         processed.append(state)
     return {"status": "accepted", "processed": len(processed), "incidents": processed}
 

@@ -126,3 +126,21 @@ labels. Batch `stage6-combined-r5-20260915` completed 5/5 valid local Compose re
 including complete policy review, Redis-then-MySQL execution and fresh joint probes. Its
 Wilson 95% interval is 56.6%-100%, so it is evidence for the enumerated topology rather
 than a production SLA or proof for arbitrary combined faults.
+
+## Stage 7: shared-store active-active load validation
+
+Status: completed on 2026-09-15. See
+[`docs/evaluations/stage7-active-active-r2-report.md`](evaluations/stage7-active-active-r2-report.md).
+
+The Compose canary now runs as a second Control API process against the same PostgreSQL
+incident and event-memory store. Alertmanager fingerprints deterministically bind a new
+incident before workflow execution, and PostgreSQL transaction advisory locks serialize
+same-alert and same-incident snapshot replacement without changing the public API.
+
+Formal batch `stage7-active-active-r2-20260915` sent 200 unique recommendation-only writes,
+64 concurrent deliveries of one new fingerprint, and 100 overlapping reads across both
+nodes at concurrency 24. All 364 requests succeeded; the duplicate fingerprint converged
+to one incident, all 202 opposite-node reads passed, and PostgreSQL had no state-ID
+mismatch, orphan child row, or approval/execution/verification side effect. Observed
+throughput was 48.811 requests/s and write p95 was 7.188 seconds. These are bounded local
+Compose observations, not a production HA, capacity, or SLA claim.

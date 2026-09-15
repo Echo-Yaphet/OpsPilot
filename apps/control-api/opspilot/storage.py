@@ -175,10 +175,23 @@ class IncidentStore:
             [(*runbook, now, now) for runbook in runbooks],
         )
 
-    def save(self, state: IncidentState, alert_key: str | None = None, approved: bool | None = None):
+    def _lock_save_key(self, db, key: str) -> None:
+        """Serialize a logical write key when the backend supports shared writers."""
+
+    def save(
+        self, state: IncidentState, alert_key: str | None = None, approved: bool | None = None
+    ) -> IncidentState:
         now = datetime.now(timezone.utc).isoformat()
-        payload = state.model_dump_json()
         with self.connection() as db:
+            if alert_key is not None:
+                self._lock_save_key(db, f"alert:{alert_key}")
+                canonical = db.execute(
+                    "SELECT incident_id FROM incidents WHERE alert_key = ?", (alert_key,)
+                ).fetchone()
+                if canonical and canonical["incident_id"] != state.incident_id:
+                    state = state.model_copy(update={"incident_id": canonical["incident_id"]})
+            self._lock_save_key(db, f"incident:{state.incident_id}")
+            payload = state.model_dump_json()
             existing = db.execute(
                 "SELECT created_at, alert_key FROM incidents WHERE incident_id = ?", (state.incident_id,)
             ).fetchone()
@@ -232,6 +245,7 @@ class IncidentStore:
             if state.verified is not None:
                 db.execute("INSERT INTO verifications(incident_id, verified, result, created_at) VALUES(?,?,?,?)",
                            (state.incident_id, int(state.verified), state.status, now))
+        return state
 
     def get(self, incident_id: str) -> IncidentState | None:
         with self.connection() as db:
@@ -420,6 +434,9 @@ class PostgresIncidentStore(IncidentStore):
             for statement in statements:
                 db.execute(statement)
             self._seed_runbooks(db)
+
+    def _lock_save_key(self, db, key: str) -> None:
+        db.execute("SELECT pg_advisory_xact_lock(hashtextextended(?, 675091745))", (key,))
 
     def _migrate_sqlite_once(self, path: str) -> None:
         source_key = hashlib.sha256(
