@@ -144,3 +144,27 @@ to one incident, all 202 opposite-node reads passed, and PostgreSQL had no state
 mismatch, orphan child row, or approval/execution/verification side effect. Observed
 throughput was 48.811 requests/s and write p95 was 7.188 seconds. These are bounded local
 Compose observations, not a production HA, capacity, or SLA claim.
+
+## Stage 8: external verification-policy rollout controller
+
+Status: completed on 2026-09-15. See
+[`docs/evaluations/stage8-policy-rollout-r2-report.md`](evaluations/stage8-policy-rollout-r2-report.md).
+
+The rollout controller is a separate one-shot deployment component with no HTTP server and
+no production execution authority. It accepts only an already signed policy bundle plus an
+explicit rollout approval, independently verifies the key ID, HMAC, content digest and strict
+policy schema, rejects rollback or same-revision conflicts, and writes through atomic files.
+The distributor retains its compatible `/bundle` route and adds isolated read-only canary and
+stable channels.
+
+Rollout is staged: every configured canary must report the exact accepted revision and digest
+through a fresh request-bound peer credential before stable is published. The controller then
+waits for an explicit quorum across the configured nodes and records an fsync-backed audit log.
+Canary failure leaves stable untouched; a successful quorum may still report pending minority
+nodes rather than claiming full convergence. The current formal batch required 2/2 nodes and
+therefore also reached full convergence.
+
+This is bounded coordination, not distributed consensus. The local acceptance uses two
+same-host processes, a shared HMAC peer key and a single distributor/volume. Real host loss,
+network partitions, controller failover, cross-zone timing and managed PostgreSQL failover
+remain future failure-domain work.

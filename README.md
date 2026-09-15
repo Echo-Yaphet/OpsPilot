@@ -16,6 +16,8 @@ Stage 6 已补齐评测暴露的 Redis+MySQL 组合故障缺口：确定性 RCA 
 
 Stage 7 已补做共享 Control API/PostgreSQL active-active 压测。两个 Control API 进程共同处理 200 个唯一 recommendation-only 写入、64 次同 fingerprint 并发 webhook 和 100 个交叠读取，364/364 请求成功；重复告警收敛为一个 incident，202/202 次跨节点读取通过，且无 state ID 错配、孤儿子记录或执行副作用。48.811 requests/s 与 7.188 秒写入 p95 仅是本机批次观测，不是生产容量或 SLA。完整结果见 [Stage 7 active-active 报告](docs/evaluations/stage7-active-active-r2-report.md)。
 
+Stage 8 新增外置 verification-policy rollout controller。控制器没有 HTTP 写接口，只接受已签名 bundle 和显式 rollout 批准；它先独立验证 key ID、HMAC、digest、严格 schema 与 revision，再原子发布 canary。只有全部 canary 精确接受 revision/digest 后才发布 stable，随后按显式 quorum 判定提交并 `fsync` 审计。失败不会让模型获得策略、target、审批、执行或 `verified` 权限。正式本机批次完成 canary→stable→2/2 quorum，并保留一次“canary 失败时 stable 未推进”的失败批次证据；这仍不是分布式共识或生产 HA 结论。完整结果见 [Stage 8 rollout 报告](docs/evaluations/stage8-policy-rollout-r2-report.md)。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -143,6 +145,17 @@ make control-api-active-active-validate \
 ```
 
 默认批次包含 40 个唯一写入、16 次同 fingerprint 投递和 20 个交叠读取，并验证跨节点可见性、数据库 cardinality、state ID、孤儿子记录及零执行副作用。可通过 `ACTIVE_ACTIVE_UNIQUE_WRITES`、`ACTIVE_ACTIVE_DUPLICATE_DELIVERIES`、`ACTIVE_ACTIVE_CONCURRENT_READS` 和 `ACTIVE_ACTIVE_CONCURRENCY` 调整规模。产物写入 `work/active-active-evaluations/<unique-id>/`，只读且不可覆盖。
+
+## Stage 8 外部策略 rollout/quorum 验收
+
+运行一次有显式批准、canary 优先的本地双节点策略 rollout：
+
+```bash
+make verification-policy-rollout-validate \
+  STAGE8_EVALUATION_ID=<unique-id>
+```
+
+验收工具生成独立的本地签名基线与候选，临时把 primary/canary 切换到严格签名的 stable/canary 只读通道，要求 canary 精确接受后才推进 stable，并等待 2/2 quorum。结束后自动恢复默认本地文件模式。原始 plan、候选、逐阶段审计、结果与验证报告写入 `work/policy-rollouts/<unique-id>/`，成功批次会设为只读且不能覆盖。生产使用时应由外部 Secret/部署系统提供签名 key、已签名候选与节点清单，不能沿用本地演示密钥。
 
 ## Redis 宕机最小链路验收
 

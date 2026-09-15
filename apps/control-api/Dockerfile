@@ -11,6 +11,7 @@ COPY apps/runtime-executor/runtime_store.py .
 COPY apps/runtime-actuator ./runtime-actuator
 COPY apps/container-metrics-exporter ./container-metrics-exporter
 COPY apps/policy-distributor ./policy-distributor
+COPY apps/policy-rollout-controller ./policy-rollout-controller
 COPY apps/promtail ./promtail
 COPY apps/workload-identity-issuer ./workload-identity-issuer
 COPY apps/repair-sandbox ./apps/repair-sandbox

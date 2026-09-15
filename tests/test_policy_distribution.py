@@ -100,8 +100,13 @@ def test_distribution_settings_require_complete_authenticated_signed_mode(kwargs
 
 def test_policy_distributor_requires_bearer_identity(tmp_path, monkeypatch):
     path = tmp_path / "bundle.json"
+    canary_path = tmp_path / "canary.json"
     path.write_bytes(bundle_bytes(103))
+    canary_path.write_bytes(bundle_bytes(104))
     monkeypatch.setenv("VERIFICATION_POLICY_BUNDLE_FILE", str(path))
+    monkeypatch.setenv(
+        "VERIFICATION_POLICY_BUNDLE_FILES", json.dumps({"canary": str(canary_path)})
+    )
     monkeypatch.setenv("VERIFICATION_POLICY_DISTRIBUTION_TOKEN", "distribution-token")
     app_path = Path("/app/policy-distributor/app.py")
     if not app_path.exists():
@@ -118,6 +123,15 @@ def test_policy_distributor_requires_bearer_identity(tmp_path, monkeypatch):
     )
     assert accepted.status_code == 200
     assert accepted.json()["revision"] == 103
+    assert client.get("/bundle/canary").status_code == 401
+    accepted_canary = client.get(
+        "/bundle/canary", headers={"Authorization": "Bearer distribution-token"}
+    )
+    assert accepted_canary.status_code == 200
+    assert accepted_canary.json()["revision"] == 104
+    assert client.get(
+        "/bundle/missing", headers={"Authorization": "Bearer distribution-token"}
+    ).status_code == 404
 
 
 @pytest.mark.asyncio

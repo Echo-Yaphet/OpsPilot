@@ -239,9 +239,29 @@ services:
       dockerfile: apps/policy-distributor/Dockerfile
     environment:
       VERIFICATION_POLICY_BUNDLE_FILE: /policy/bundle.json
+      VERIFICATION_POLICY_BUNDLE_FILES: '${VERIFICATION_POLICY_BUNDLE_FILES:-{"stable":"/rollout/stable.json","canary":"/rollout/canary.json"}}'
       VERIFICATION_POLICY_DISTRIBUTION_TOKEN: ${VERIFICATION_POLICY_DISTRIBUTION_TOKEN:-opspilot-local-policy-distribution-token}
     volumes:
       - ./infra/opspilot/verification-policy-distribution.json:/policy/bundle.json:ro
+      - verification-policy-rollout:/rollout:ro
+
+  policy-rollout-controller:
+    <<: *service-common
+    profiles: [policy-rollout]
+    build:
+      context: .
+      dockerfile: apps/policy-rollout-controller/Dockerfile
+    environment:
+      VERIFICATION_POLICY_SIGNING_KEYS: '${VERIFICATION_POLICY_SIGNING_KEYS:-{}}'
+      VERIFICATION_POLICY_PEER_IDENTITY_KEY: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY:-opspilot-local-policy-peer-key}
+      VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID:-verification-policy-peer-v1}
+      VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS: ${VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS:-10}
+    volumes:
+      - ./work/policy-rollouts:/input:ro
+      - ./work/policy-rollouts:/evidence
+      - verification-policy-rollout:/rollout
+    depends_on:
+      policy-distributor: {condition: service_started}
 
   control-api-canary:
     <<: *service-common
@@ -287,7 +307,7 @@ services:
       VERIFICATION_POLICY_FILE: /etc/opspilot/verification-policies.json
       VERIFICATION_POLICY_SIGNING_KEYS: '${VERIFICATION_POLICY_SIGNING_KEYS:-{}}'
       VERIFICATION_POLICY_REQUIRE_SIGNATURE: ${VERIFICATION_POLICY_REQUIRE_SIGNATURE:-false}
-      VERIFICATION_POLICY_DISTRIBUTION_URL: ${VERIFICATION_POLICY_DISTRIBUTION_URL:-}
+      VERIFICATION_POLICY_DISTRIBUTION_URL: ${VERIFICATION_POLICY_CANARY_DISTRIBUTION_URL:-${VERIFICATION_POLICY_DISTRIBUTION_URL:-}}
       VERIFICATION_POLICY_DISTRIBUTION_TOKEN: ${VERIFICATION_POLICY_DISTRIBUTION_TOKEN:-}
       VERIFICATION_POLICY_DISTRIBUTION_TIMEOUT: ${VERIFICATION_POLICY_DISTRIBUTION_TIMEOUT:-2}
       VERIFICATION_POLICY_DISTRIBUTION_POLL_INTERVAL: ${VERIFICATION_POLICY_DISTRIBUTION_POLL_INTERVAL:-2}
@@ -791,3 +811,4 @@ volumes:
   repair-lab-data: {}
   memory-data: {}
   tempo-data: {}
+  verification-policy-rollout: {}

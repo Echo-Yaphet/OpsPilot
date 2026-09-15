@@ -16,4 +16,5 @@ work/runtime-log-vault-agent/
 work/stage5-evaluations/
 work/stage6-evaluations/
 work/active-active-evaluations/
+work/policy-rollouts/
 **/node_modules/

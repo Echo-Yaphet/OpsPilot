@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate verification-policy-rollout-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -65,6 +65,13 @@ control-api-active-active-validate:
 		$(if $(ACTIVE_ACTIVE_DUPLICATE_DELIVERIES),--duplicate-deliveries $(ACTIVE_ACTIVE_DUPLICATE_DELIVERIES),) \
 		$(if $(ACTIVE_ACTIVE_CONCURRENT_READS),--concurrent-reads $(ACTIVE_ACTIVE_CONCURRENT_READS),) \
 		$(if $(ACTIVE_ACTIVE_CONCURRENCY),--concurrency $(ACTIVE_ACTIVE_CONCURRENCY),)
+
+verification-policy-rollout-validate:
+	test -n "$(STAGE8_EVALUATION_ID)" || (echo "STAGE8_EVALUATION_ID is required" && exit 2)
+	STAGE8_EVALUATION_ID=$(STAGE8_EVALUATION_ID) \
+		$(if $(STAGE8_BASELINE_REVISION),STAGE8_BASELINE_REVISION=$(STAGE8_BASELINE_REVISION),) \
+		$(if $(STAGE8_CANDIDATE_REVISION),STAGE8_CANDIDATE_REVISION=$(STAGE8_CANDIDATE_REVISION),) \
+		./scripts/validate-verification-policy-rollout.sh
 
 repair-lab-validate:
 	docker compose --profile repair-lab up -d --build repair-lab-redis repair-validator repair-sandbox repair-lab-payment
