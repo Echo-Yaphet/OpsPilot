@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql recover
+.PHONY: up down ps logs test smoke evaluate-stage5 repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -73,6 +73,9 @@ fault-cpu:
 
 fault-mysql:
 	./scripts/faults/mysql-down.sh
+
+fault-combined:
+	./scripts/faults/redis-mysql-down.sh
 
 recover:
 	./scripts/recover-runtime-dependencies.sh

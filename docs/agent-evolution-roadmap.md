@@ -103,3 +103,22 @@ includes failed attempts. Regression rate means previously passing cases that fa
 with the new version. The proposed +10 percentage points recovery, -20% cost and <=3%
 regression values are targets, not results. A 100% bypass interception claim applies
 only to the enumerated adversarial test set, never to all possible actions.
+
+## Stage 6: combined-dependency recovery
+
+Status: completed on 2026-09-15.
+
+The deterministic RCA now represents simultaneous Redis and MySQL failures as one
+combined root cause and owns the ordered target list. Solution emits one compatible
+`Recommendation` per target. Safety evaluates the complete batch before execution and
+denies the whole plan if any action is absent or rejected; approval remains one explicit
+human decision for the displayed plan. Executor runs the already-approved typed actions
+in deterministic order, stops after the first failure and records completed/failed target
+evidence. Verification resolves one immutable service policy and requires every target
+container, every target dependency metric and service health to stabilize together.
+
+This stage does not give the model authority over targets or ordering, add arbitrary
+commands, weaken Gateway/runtime allowlists, or change the public `IncidentState`, HTTP
+API, `IncidentWorkflow.run()` or `OpsTools` interfaces. The Stage 5 0/2 combined result
+remains an immutable historical baseline; the Stage 6 implementation has deterministic
+regression tests and one live Redis+MySQL acceptance, not a new statistical comparison.

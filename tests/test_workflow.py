@@ -81,6 +81,43 @@ class HealthyMetricsWithStaleLogsTools(FakeTools):
         ]
 
 
+class CombinedDependencyTools(FakeTools):
+    def __init__(self):
+        self.restarted_targets = []
+
+    async def query_metric(self, query):
+        if "container_cpu_usage_ratio" in query:
+            return []
+        dependencies = [
+            dependency for dependency in ("redis", "mysql")
+            if f'dependency="{dependency}"' in query or "dependency=" not in query
+        ]
+        return [{
+            "metric": {"service": "payment-service", "dependency": dependency},
+            "value": [1, "1" if dependency in self.restarted_targets else "0"],
+        } for dependency in dependencies]
+
+    async def query_logs(self, service, minutes=10, limit=100):
+        return [
+            "level=ERROR redis dependency failed error=ConnectionError",
+            "level=ERROR mysql dependency failed error=ConnectionError",
+        ]
+
+    async def container_status(self, service):
+        return "running" if service in self.restarted_targets else "exited"
+
+    async def service_health(self, service):
+        recovered = set(self.restarted_targets) >= {"redis", "mysql"}
+        return {
+            "healthy": recovered,
+            "detail": {"status": "ok" if recovered else "degraded"},
+        }
+
+    async def restart_container(self, service):
+        self.restarted_targets.append(service)
+        return f"restarted {service}"
+
+
 class IncidentTimeTools(FakeTools):
     metric_at = None
     log_window = None
@@ -274,6 +311,74 @@ async def test_approved_execution_is_verified():
     verification = next(item for item in state.evidence if item.source == "verification")
     assert verification.data["service_healthy"] is True
     assert verification.data["dependency_up"] is True
+
+
+@pytest.mark.asyncio
+async def test_combined_dependency_failure_executes_ordered_plan_and_verifies_every_target():
+    tools = CombinedDependencyTools()
+    workflow = IncidentWorkflow(tools, verification_interval=0)
+
+    state = await workflow.run(AnalyzeRequest(execute=True, approved=True))
+
+    assert state.root_cause == "Redis and MySQL dependencies are unavailable"
+    assert state.confidence == pytest.approx(0.94)
+    assert [item.command for item in state.recommendations] == [
+        "docker compose restart redis",
+        "docker compose restart mysql",
+    ]
+    assert tools.restarted_targets == ["redis", "mysql"]
+    assert state.execution_result == "restarted redis; restarted mysql"
+    assert state.status == "resolved"
+    assert state.verified is True
+    policy = [item for item in state.evidence if item.source == "execution_policy"]
+    assert [item.data["target"] for item in policy] == ["redis", "mysql"]
+    verification = next(item for item in state.evidence if item.source == "verification")
+    assert verification.data["target_results"] == {
+        "redis": {"container_status": "running", "dependency_up": True},
+        "mysql": {"container_status": "running", "dependency_up": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_combined_plan_is_fail_closed_when_any_target_is_denied():
+    tools = CombinedDependencyTools()
+    workflow = IncidentWorkflow(
+        tools,
+        execution_policy=ExecutionPolicy(frozenset({"redis"})),
+        verification_interval=0,
+    )
+
+    state = await workflow.run(AnalyzeRequest(execute=True, approved=True))
+
+    assert state.status == "execution_denied"
+    assert state.execution_result == "denied: restart target is not allowlisted: mysql"
+    assert tools.restarted_targets == []
+    assert state.verified is None
+
+
+@pytest.mark.asyncio
+async def test_combined_plan_stops_after_executor_failure_and_skips_verification():
+    class FailingSecondExecutor:
+        calls = []
+
+        async def execute(self, action):
+            self.calls.append(action.target)
+            if action.target == "mysql":
+                raise RuntimeError("mysql actuator unavailable")
+            return f"restarted {action.target}"
+
+    executor = FailingSecondExecutor()
+    state = await IncidentWorkflow(
+        CombinedDependencyTools(), executor=executor, verification_interval=0,
+    ).run(AnalyzeRequest(execute=True, approved=True))
+
+    assert executor.calls == ["redis", "mysql"]
+    assert state.status == "execution_failed"
+    assert state.execution_result == "failed after 1/2 action(s): mysql actuator unavailable"
+    assert state.verified is None
+    plan = next(item for item in state.evidence if item.source == "execution_plan")
+    assert plan.data["completed"] == [{"target": "redis", "result": "restarted redis"}]
+    assert plan.data["failed_target"] == "mysql"
 
 
 def test_execution_policy_allows_only_known_restart_operation():

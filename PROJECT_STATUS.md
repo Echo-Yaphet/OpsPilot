@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-10 (Stage 5 held-out paired evaluation)
+Last updated: 2026-09-15 (Stage 6 combined-dependency recovery)
 
 ## Continue from here
 
@@ -9,8 +9,10 @@ in `docs/agent-evolution-roadmap.md`. Stages 1 through 4 now provide an opt-in S
 investigation loop, isolated repair laboratory, resumable lifecycle harness, shared
 PostgreSQL/pgvector memory, OpenTelemetry Trace and approval-gated Skill promotion.
 Stage 5 held-out evaluation is complete without exposing held-out labels to generation.
-The next resume-driven node is to address combined-fault planning or expand the repeated
-evaluation sample before making production-quality statistical claims.
+Stage 6 closes the Redis+MySQL combined-fault gap with deterministic multi-target
+planning, fail-closed batch policy review, ordered execution and joint verification.
+The next resume-driven node is to expand the repeated evaluation sample or exercise the
+shared Control API store under an active-active load before production-quality claims.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
@@ -130,6 +132,7 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Stage 4 freezes server-owned regression/counterexample trajectories and evaluates typed Skill candidates in isolated read-only workspaces. Candidates retain branch/workspace identity, trigger and case-set hashes, diff, evaluator/result details, parent version and rollback pointer.
 - Candidate content can express only diagnostic matching/guidance and non-executable repair recipes. Authenticated candidate creation never activates content; a separate authenticated `approved=true` promotion rejects failed or stale-parent versions. Promoted guidance remains advisory to SDK investigation and cannot alter probes, gates, commands, targets, approval, execution or verification truth.
 - Stage 5 adds a label-isolated `EvaluationRunner.run(plan) -> EvaluationReport` seam, paired/counterbalanced Skill-version trials, shared seeds, independent recovery probes, Wilson intervals, cost/latency accounting, grouped metrics, streaming checkpoints and non-overwritable JSON/JSONL/Markdown artifacts. The live suite covers 16 frozen CPU, Redis, MySQL, combined-fault, healthy-counterevidence, regression and safety cases.
+- Stage 6 detects simultaneous Redis and MySQL failure as one deterministic combined root cause, emits an ordered two-recommendation plan, evaluates every action before execution, fails the whole plan closed if any action is denied, stops on executor failure, and verifies every target plus service health under one immutable policy snapshot. The public `IncidentState`, HTTP routes, `IncidentWorkflow.run()` and typed executor seam remain compatible.
 
 ### Dashboard
 
@@ -141,15 +144,26 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - Approved repair execution and verification flow.
 - Responsive desktop/mobile layout.
 - Persistent incident history selector restores details and Agent timelines after refresh.
+- Recommendation cards render every action in an ordered multi-target recovery plan.
 - Project-specific Open Graph image at `apps/dashboard/public/og.png`.
 
 ### Fault scenarios
 
 - `Redis down`: complete detection, alert, evidence, RCA, recommendation, approval, restart, and recovery path.
 - `MySQL down`: injectable and handled by deterministic RCA rules.
+- `Redis + MySQL down`: deterministic combined RCA, fail-closed two-action policy review, ordered approved recovery and joint independent verification.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest verification for Stage 6 combined-dependency recovery:
+
+- The rebuilt current-source suite passed all 166 backend tests. Focused workflow/persistence coverage passed 47 tests, including ordered Redis then MySQL execution, whole-plan policy denial, partial executor failure, joint target verification and multi-row policy/execution audit persistence. The Dashboard production image also built successfully.
+- Live fault injection stopped Redis and MySQL through their separate OS-isolated actuators. Prometheus observed both `payment-service` dependency series at zero before analysis.
+- Recommendation-only incident `5c9f2b76-b5a5-4e08-b2bd-c8c99b048d3d` returned root cause `Redis and MySQL dependencies are unavailable` at confidence `0.94`, emitted `restart redis` then `restart mysql`, passed two independent allowlist decisions, and performed no execution or Verification.
+- Explicitly approved incident `744be206-eec2-417d-8cfa-6b85c8050807` executed Redis then MySQL through the existing Gateway/broker/actuator boundary and reached `resolved`, `verified=true` on bounded attempt five. Verification recorded both containers running, both dependency metrics recovered and `payment-service` healthy.
+- PostgreSQL retained two ordered policy decisions and one execution audit containing both commands/results. The rebuilt 25-service default stack and final smoke passed with runtime-log mTLS, Loki delivery, Tempo, healthy Redis/MySQL and recommendation-only non-execution.
+- The first post-rebuild smoke reached Tempo before its readiness endpoint returned 200 and failed once with HTTP 503; retry after readiness passed without code or configuration changes.
 
 Latest verification for Stage 5 held-out paired evaluation:
 
@@ -534,6 +548,7 @@ make smoke         # baseline application and control API check
 make test          # run workflow tests in the control container
 make fault-redis   # stop Redis and generate health traffic
 make fault-mysql   # stop MySQL and generate health traffic
+make fault-combined # stop Redis and MySQL and generate health traffic
 make fault-cpu     # bounded payment-service CPU work
 make recover       # start Redis/MySQL and restart payment-service
 make down          # stop the stack
@@ -591,7 +606,7 @@ Local entry points:
 
 - LangGraph orchestration checkpoints remain process-local, while the SDK investigation lifecycle is now resumable from PostgreSQL. A local Ollama model can perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab remains a fixed demonstration target, not a general production Shell.
 - Shared PostgreSQL removes the default single-node SQLite write constraint, but the Control API has not yet been load-tested as an active-active deployment. SQLite remains only a local fallback.
-- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 5 now provides time/topology-oriented held-out labels, paired repetitions, independent probes, latency and cost-per-success metrics. Its current sample is deliberately small (12 recovery trials per arm), and combined Redis+MySQL recovery remains 0/2 per arm because the workflow executes only one repair target per incident.
+- Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 5 provides time/topology-oriented held-out labels, paired repetitions, independent probes, latency and cost-per-success metrics, but its historical sample is deliberately small (12 recovery trials per arm). Stage 6 closes the observed Redis+MySQL workflow gap; it has one live acceptance plus deterministic regression coverage, not a repeated statistical comparison or proof for arbitrary combined faults.
 - Authenticated pull distribution, per-node validation/cache fallback, request-bound replay-safe peer status, and bounded configured-node convergence reporting are implemented. The reporter remains observational rather than a quorum/consensus system; peer identity still uses a local shared HMAC key, and the shared PostgreSQL Control API store has not yet been load-tested as an active-active production topology.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
 - CPU observation uses target-process counters with strict per-service thresholds and health/staleness alerts. The local exporter still polls on scrape, covers only the three business services, and requires recreation to change targets or thresholds; last-success timestamps are process-local and reset when the exporter restarts.
@@ -813,4 +828,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md` and `docs/evaluations/stage5-v2-v3-report.md`, then refresh Git and runtime status. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Formal Stage 5 batch `stage5-v2-v3-isolated-r4` completed 64/64 valid trials; each arm had 10/12 recovery, 16/16 RCA and 16/16 safety interception, while v3 cost more with no quality gain. Next address combined-fault planning (currently 0/2 recovery per arm) or expand repetitions before stronger statistical claims. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md` and `docs/evaluations/stage5-v2-v3-report.md`, then refresh Git and runtime status. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification while preserving public interfaces. Formal Stage 5 batch `stage5-v2-v3-isolated-r4` remains historical evidence: each arm had 10/12 recovery, 16/16 RCA and 16/16 safety interception, while v3 cost more with no quality gain. Next expand repetitions or load-test active-active state before stronger claims. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, Verification revision >104, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.

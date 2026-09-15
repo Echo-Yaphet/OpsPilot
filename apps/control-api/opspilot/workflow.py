@@ -27,10 +27,12 @@ class WorkflowState(TypedDict):
     cpu_metrics: list[dict]
     logs: list[str]
     target: str
+    targets: list[str]
     investigation_plan: InvestigationPlan | None
     tool_observations: list[dict]
     llm_analysis: LLMAnalysis | None
     policy_decision: PolicyDecision | None
+    policy_decisions: list[PolicyDecision]
     evidence_context: dict
 
 
@@ -291,18 +293,23 @@ class IncidentWorkflow:
             for item in graph_state["cpu_metrics"]
         )
 
-        if redis_down:
+        if redis_down and mysql_down:
+            state.root_cause, state.confidence = (
+                "Redis and MySQL dependencies are unavailable", 0.94
+            )
+            targets = ["redis", "mysql"]
+        elif redis_down:
             state.root_cause, state.confidence = "Redis dependency is unavailable", 0.92
-            target = "redis"
+            targets = ["redis"]
         elif mysql_down:
             state.root_cause, state.confidence = "MySQL dependency is unavailable", 0.9
-            target = "mysql"
+            targets = ["mysql"]
         elif high_cpu:
             state.root_cause, state.confidence = "Container CPU usage is high", 0.9
-            target = request.service
+            targets = [request.service]
         else:
             state.root_cause, state.confidence = "Insufficient evidence; dependency or application degradation suspected", 0.45
-            target = request.service
+            targets = [request.service]
         runbooks = self.knowledge_retriever.retrieve_runbooks(
             request.service, request.symptom, state.root_cause
         )
@@ -371,24 +378,22 @@ class IncidentWorkflow:
                     },
                 ))
         self.event(state, AgentName.RCA, f"Root cause: {state.root_cause} ({state.confidence:.0%})")
-        return {"incident": state, "target": target, "llm_analysis": llm_analysis}
+        return {
+            "incident": state,
+            "target": targets[0],
+            "targets": targets,
+            "llm_analysis": llm_analysis,
+        }
 
     def _route_after_rca(self, graph_state: WorkflowState) -> Literal["conclusive", "insufficient_evidence"]:
         return "conclusive" if graph_state["incident"].confidence >= 0.8 else "insufficient_evidence"
 
     async def _solution(self, graph_state: WorkflowState) -> dict:
-        state, target = graph_state["incident"], graph_state["target"]
+        state = graph_state["incident"]
+        targets = graph_state.get("targets") or [graph_state["target"]]
         runbook_evidence = next((item for item in state.evidence if item.source == "runbook"), None)
         matched_runbook = runbook_evidence.data[0] if runbook_evidence and runbook_evidence.data else None
-        command = matched_runbook.get("command") if matched_runbook else None
-        if command is None:
-            command = f"docker compose restart {target}"
         llm_analysis = graph_state.get("llm_analysis")
-        title = llm_analysis.recommendation_title if llm_analysis else None
-        if title is None:
-            title = matched_runbook.get("title") if matched_runbook else None
-        if title is None and state.root_cause == "Container CPU usage is high":
-            title = f"Restart {target} and verify container CPU usage"
         if llm_analysis is not None:
             state.evidence.append(Evidence(
                 source="llm_solution",
@@ -401,26 +406,54 @@ class IncidentWorkflow:
                     "command_source": "deterministic_runbook_or_allowlist",
                 },
             ))
-        state.recommendations.append(Recommendation(
-            title=title or f"Restart {target} and verify dependency metrics", command=command,
-            risk=RiskLevel.MEDIUM, requires_approval=True,
-        ))
-        self.event(state, AgentName.SOLUTION, f"Prepared recovery plan for {target}")
+        for target in targets:
+            use_runbook = len(targets) == 1 and matched_runbook is not None
+            command = matched_runbook.get("command") if use_runbook else None
+            if command is None:
+                command = f"docker compose restart {target}"
+            title = None
+            if len(targets) == 1 and llm_analysis is not None:
+                title = llm_analysis.recommendation_title
+            if title is None and use_runbook:
+                title = matched_runbook.get("title")
+            if title is None and state.root_cause == "Container CPU usage is high":
+                title = f"Restart {target} and verify container CPU usage"
+            state.recommendations.append(Recommendation(
+                title=title or f"Restart {target} and verify dependency metrics",
+                command=command,
+                risk=RiskLevel.MEDIUM,
+                requires_approval=True,
+            ))
+        self.event(
+            state,
+            AgentName.SOLUTION,
+            f"Prepared ordered recovery plan for {', '.join(targets)}",
+        )
         return {"incident": state}
 
     async def _safety(self, graph_state: WorkflowState) -> dict:
         state = graph_state["incident"]
-        command = state.recommendations[0].command if state.recommendations else None
-        decision = self.execution_policy.evaluate(command)
-        state.evidence.append(Evidence(
-            source="execution_policy", summary="execution allowlist decision", data=decision.audit_data(),
-        ))
+        decisions = [
+            self.execution_policy.evaluate(recommendation.command)
+            for recommendation in state.recommendations
+        ]
+        for position, decision in enumerate(decisions):
+            state.evidence.append(Evidence(
+                source="execution_policy",
+                summary=f"execution allowlist decision {position + 1}/{len(decisions)}",
+                data=decision.audit_data(),
+            ))
         self.event(
             state,
             AgentName.SAFETY,
-            f"Restart is medium risk and requires explicit approval; policy {decision.reason}",
+            "Recovery plan is medium risk and requires explicit approval; "
+            f"policy allowed {sum(decision.allowed for decision in decisions)}/{len(decisions)} action(s)",
         )
-        return {"incident": state, "policy_decision": decision}
+        return {
+            "incident": state,
+            "policy_decision": decisions[0] if len(decisions) == 1 else None,
+            "policy_decisions": decisions,
+        }
 
     def _route_after_safety(
         self, graph_state: WorkflowState
@@ -431,26 +464,54 @@ class IncidentWorkflow:
         return "approved_execution" if request.approved else "approval_required"
 
     async def _executor(self, graph_state: WorkflowState) -> dict:
-        state, request, target = graph_state["incident"], graph_state["request"], graph_state["target"]
+        state, request = graph_state["incident"], graph_state["request"]
         if request.execute:
             if not request.approved:
                 state.status = "awaiting_approval"
                 state.execution_result = "blocked: approval required"
                 self.event(state, AgentName.EXECUTOR, state.execution_result)
             else:
-                decision = graph_state["policy_decision"]
-                if decision is None or not decision.allowed or decision.action is None:
-                    reason = decision.reason if decision else "denied: no policy decision"
+                decisions = graph_state.get("policy_decisions") or []
+                denied = next(
+                    (decision for decision in decisions
+                     if not decision.allowed or decision.action is None),
+                    None,
+                )
+                if not decisions or denied is not None:
+                    reason = denied.reason if denied else "denied: no policy decision"
                     state.status = "execution_denied"
                     state.execution_result = reason
                     self.event(state, AgentName.EXECUTOR, reason)
                     return {"incident": state}
+                results = []
                 try:
-                    state.execution_result = await self.executor.execute(decision.action)
+                    for decision in decisions:
+                        result = await self.executor.execute(decision.action)
+                        results.append({"target": decision.action.target, "result": result})
+                    state.execution_result = "; ".join(item["result"] for item in results)
+                    state.evidence.append(Evidence(
+                        source="execution_plan",
+                        summary="ordered recovery actions completed",
+                        data={"status": "completed", "results": results},
+                    ))
                     self.event(state, AgentName.EXECUTOR, state.execution_result)
                 except Exception as exc:
                     state.status = "execution_failed"
-                    state.execution_result = f"failed: {exc}"
+                    prefix = (
+                        f"failed after {len(results)}/{len(decisions)} action(s)"
+                        if results else "failed"
+                    )
+                    state.execution_result = f"{prefix}: {exc}"
+                    state.evidence.append(Evidence(
+                        source="execution_plan",
+                        summary="ordered recovery actions failed",
+                        data={
+                            "status": "failed",
+                            "completed": results,
+                            "failed_target": decisions[len(results)].action.target,
+                            "error": str(exc)[:500],
+                        },
+                    ))
                     self.event(state, AgentName.EXECUTOR, state.execution_result)
         else:
             state.status = "recommendation_ready"
@@ -461,20 +522,23 @@ class IncidentWorkflow:
         request = graph_state["request"]
         if not request.execute:
             return "deferred"
-        decision = graph_state["policy_decision"]
+        decisions = graph_state.get("policy_decisions") or []
         return "verify" if (
-            request.approved and decision and decision.allowed
+            request.approved and decisions
+            and all(decision.allowed and decision.action for decision in decisions)
             and graph_state["incident"].status != "execution_failed"
         ) else "blocked"
 
     async def _verification(self, graph_state: WorkflowState) -> dict:
-        state, request, target = graph_state["incident"], graph_state["request"], graph_state["target"]
-        decision = graph_state["policy_decision"]
+        state, request = graph_state["incident"], graph_state["request"]
+        targets = graph_state.get("targets") or [graph_state["target"]]
+        decisions = graph_state.get("policy_decisions") or []
         if (
-            request.execute and request.approved and decision and decision.allowed
+            request.execute and request.approved and decisions
+            and all(decision.allowed and decision.action for decision in decisions)
             and state.status != "execution_failed"
         ):
-            result = await self._poll_recovery(request.service, target)
+            result = await self._poll_recovery_targets(request.service, targets)
             state.verified = result["verified"]
             state.status = "resolved" if state.verified else "verification_failed"
             state.evidence.append(Evidence(
@@ -483,7 +547,7 @@ class IncidentWorkflow:
             if self._model_narrative_allowed(state):
                 try:
                     explanation = await self.incident_analyzer.explain_verification(
-                        service=request.service, target=target, result=result,
+                        service=request.service, target=", ".join(targets), result=result,
                     )
                     state.evidence.append(Evidence(
                         source="llm_verification",
@@ -516,6 +580,10 @@ class IncidentWorkflow:
 
     async def _poll_recovery(self, service: str, target: str) -> dict:
         """Require the repaired container, service health, and dependency metric to recover."""
+        return await self._poll_recovery_targets(service, [target])
+
+    async def _poll_recovery_targets(self, service: str, targets: list[str]) -> dict:
+        """Verify every planned target against one immutable service policy snapshot."""
         # Resolve once so one incident uses an immutable policy snapshot even if
         # the centrally managed file changes while checks are in progress.
         policy = (
@@ -523,28 +591,66 @@ class IncidentWorkflow:
             if self.verification_policy_provider
             else self.verification_policies.get(service, self.default_verification_policy)
         )
-        last = {"container_status": "unknown", "service_healthy": False, "dependency_up": False}
+        last = {}
         stable_checks = 0
         for attempt in range(1, policy.max_attempts + 1):
+            last = {
+                "container_status": "unknown" if len(targets) == 1 else {
+                    target: "unknown" for target in targets
+                },
+                "service_healthy": False,
+                "dependency_up": False,
+            }
             try:
-                last["container_status"] = await self.tools.container_status(target)
+                statuses = {
+                    target: await self.tools.container_status(target) for target in targets
+                }
+                last["container_status"] = (
+                    statuses[targets[0]] if len(targets) == 1 else statuses
+                )
                 health = await self.tools.service_health(service)
                 if policy.service_health_condition == "status_ok":
                     last["service_healthy"] = health.get("detail", {}).get("status") == "ok"
                 else:
                     last["service_healthy"] = bool(health.get("healthy"))
-                dependency_filter = f',dependency="{target}"' if target in ("redis", "mysql") else ""
-                metrics = await self.tools.query_metric(
-                    f'dependency_up{{service="{service}"{dependency_filter}}}'
-                )
-                last["dependency_up"] = bool(metrics) and all(
-                    float(item.get("value", [0, 0])[1]) >= policy.dependency_metric_threshold
-                    for item in metrics
-                )
+                dependency_targets = [target for target in targets if target in ("redis", "mysql")]
+                dependency_results = {}
+                for target in dependency_targets:
+                    metrics = await self.tools.query_metric(
+                        f'dependency_up{{service="{service}",dependency="{target}"}}'
+                    )
+                    dependency_results[target] = bool(metrics) and all(
+                        float(item.get("value", [0, 0])[1])
+                        >= policy.dependency_metric_threshold
+                        for item in metrics
+                    )
+                if dependency_targets:
+                    last["dependency_up"] = all(dependency_results.values())
+                else:
+                    metrics = await self.tools.query_metric(
+                        f'dependency_up{{service="{service}"}}'
+                    )
+                    last["dependency_up"] = bool(metrics) and all(
+                        float(item.get("value", [0, 0])[1])
+                        >= policy.dependency_metric_threshold
+                        for item in metrics
+                    )
+                if len(targets) > 1:
+                    last["target_results"] = {
+                        target: {
+                            "container_status": statuses[target],
+                            "dependency_up": dependency_results.get(target, True),
+                        }
+                        for target in targets
+                    }
             except Exception as exc:
                 last["error"] = str(exc)
             recovered = all((
-                last["container_status"] == "running",
+                (
+                    last["container_status"] == "running"
+                    if len(targets) == 1
+                    else all(status == "running" for status in last["container_status"].values())
+                ),
                 last["service_healthy"],
                 last["dependency_up"],
             ))
@@ -556,7 +662,7 @@ class IncidentWorkflow:
                     "required_stable_checks": policy.recovery_stable_checks,
                     "policy": policy.model_dump(mode="json"),
                     "message": (
-                        f"Service health and {target} dependency metric were stable for "
+                        f"Service health and {', '.join(targets)} recovery signals were stable for "
                         f"{stable_checks} check(s) after {attempt} total check(s)"
                     ),
                 }
@@ -616,10 +722,12 @@ class IncidentWorkflow:
                 "cpu_metrics": [],
                 "logs": [],
                 "target": request.service,
+                "targets": [request.service],
                 "investigation_plan": None,
                 "tool_observations": [],
                 "llm_analysis": None,
                 "policy_decision": None,
+                "policy_decisions": [],
                 "evidence_context": evidence_context,
             },
             config={"configurable": {"thread_id": incident.incident_id}},

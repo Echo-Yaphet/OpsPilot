@@ -225,7 +225,8 @@ class IncidentStore:
                 db.execute("INSERT INTO approvals(incident_id, approved, requested_execution, created_at) VALUES(?,?,?,?)",
                            (state.incident_id, int(approved), int(state.execution_requested), now))
             if state.execution_result is not None:
-                command = state.recommendations[0].command if state.recommendations else None
+                commands = [item.command for item in state.recommendations if item.command]
+                command = "; ".join(commands) if commands else None
                 db.execute("INSERT INTO executions(incident_id, command, result, created_at) VALUES(?,?,?,?)",
                            (state.incident_id, command, state.execution_result, now))
             if state.verified is not None:

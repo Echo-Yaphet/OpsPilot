@@ -164,6 +164,51 @@ def test_policy_allow_and_deny_decisions_are_persisted(tmp_path):
     ]
 
 
+def test_multi_target_plan_persists_each_policy_decision_and_joined_commands(tmp_path):
+    store = IncidentStore(str(tmp_path / "incidents.db"))
+    state = IncidentState(
+        incident_id="combined-plan",
+        recommendations=[
+            Recommendation(
+                title="Restart Redis", command="docker compose restart redis",
+                risk=RiskLevel.MEDIUM,
+            ),
+            Recommendation(
+                title="Restart MySQL", command="docker compose restart mysql",
+                risk=RiskLevel.MEDIUM,
+            ),
+        ],
+        evidence=[Evidence(
+            source="execution_policy", summary=f"decision for {target}", data={
+                "allowed": True,
+                "reason": f"allowed: restart target is allowlisted: {target}",
+                "policy": "local-compose-restart-v1",
+                "operation": "restart_container",
+                "target": target,
+                "command": f"docker compose restart {target}",
+            },
+        ) for target in ("redis", "mysql")],
+        execution_result="restarted redis; restarted mysql",
+        verified=True,
+    )
+
+    store.save(state)
+
+    with store.connection() as db:
+        decisions = db.execute(
+            "SELECT target FROM policy_decisions ORDER BY position"
+        ).fetchall()
+        execution = db.execute(
+            "SELECT command, result FROM executions WHERE incident_id=?",
+            (state.incident_id,),
+        ).fetchone()
+    assert [row["target"] for row in decisions] == ["redis", "mysql"]
+    assert execution["command"] == (
+        "docker compose restart redis; docker compose restart mysql"
+    )
+    assert execution["result"] == "restarted redis; restarted mysql"
+
+
 def test_sqlite_runbook_retrieval_is_deterministic(tmp_path):
     store = IncidentStore(str(tmp_path / "incidents.db"))
 

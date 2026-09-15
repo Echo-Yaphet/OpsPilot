@@ -12,6 +12,8 @@ Stage 4 Skill promotion 由 Control API 提供独立注册表：编码 Agent 只
 
 Stage 5 通过 `EvaluationRunner.run(plan)` 提供不泄露 expected label 的留出配对评测。正式批次覆盖 16 个冻结场景、v2/v3 两臂和两次重复，共 64 条真实 Compose 试验；共享 seed、交替 arm 顺序、故障指标准入和独立恢复探针避免把环境异常或先后顺序误计为模型效果。完整结果与可用于简历的口径见 [Stage 5 评测报告](docs/evaluations/stage5-v2-v3-report.md)。
 
+Stage 6 已补齐评测暴露的 Redis+MySQL 组合故障缺口：确定性 RCA 同时识别两个依赖，生成 Redis→MySQL 有序建议；Safety 在执行前逐项审查，任一动作不合法则整批拒绝；显式批准后才通过原有 Gateway/broker/actuator 边界顺序执行，Verification 使用同一不可变策略快照联合检查两个容器、两个依赖指标和业务健康。模型仍不能决定 target、顺序、审批、执行或 `verified`。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -173,6 +175,7 @@ kubectl kustomize infra/kubernetes/runtime-plane >/tmp/opspilot-runtime-plane.ya
 ```bash
 make fault-cpu     # payment-service 执行最长 30 秒的有界 CPU 工作
 make fault-mysql   # 停止 MySQL，并触发三个服务的健康检查
+make fault-combined # 同时停止 Redis/MySQL，验收有序多目标恢复
 make recover       # 启动 Redis/MySQL 并重启 payment-service
 ```
 
@@ -228,7 +231,7 @@ Coordinator 将使用 OpenAI Agents SDK 的真实工具循环，按观察结果�
 保存 Incident、审计、调查生命周期及 Skill 候选/晋级版本链，并从原 SQLite 做事务化一次迁移；SQLite
 仍是可用 fallback。事件记忆先按服务、服务版本、条件和过期时间过滤，再使用 pgvector 排序。
 Control API 与三个业务服务通过 OpenTelemetry Collector 写入 Tempo，Grafana 已配置 Tempo 数据源；
-Trace 尚未暴露为模型工具；Stage 4 Skill promotion 与 Stage 5 held-out paired evaluation 均已完成；
+Trace 尚未暴露为模型工具；Stage 4 Skill promotion、Stage 5 held-out paired evaluation 与 Stage 6 combined-dependency recovery 均已完成；
 分阶段实施与验收条件见 [Agent 演进路线图](docs/agent-evolution-roadmap.md)。
 
 `IncidentState` 是所有节点共享的状态，保留 evidence、events、root cause、confidence、recommendations、execution 和 verification 结果。节点接口已包括 Coordinator、Monitor、Log、RCA、Solution、Safety、Executor、Verification。

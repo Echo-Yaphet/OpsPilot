@@ -238,8 +238,8 @@ export default function Dashboard() {
 
                   <div className="section-title"><span>证据链</span><small>{incident.evidence.length} 个来源</small></div>
                   <div className="evidence-grid">
-                    {incident.evidence.map((item) => (
-                      <div className="evidence-card" key={item.source}>
+                    {incident.evidence.map((item, index) => (
+                      <div className="evidence-card" key={`${item.source}-${index}`}>
                         <span>{evidenceKind(item.source)}</span><strong>{item.source}</strong>
                         <p>{item.summary}</p>{llmDetail(item) && <p>{llmDetail(item)}</p>}
                       </div>
@@ -259,8 +259,15 @@ export default function Dashboard() {
 
                   {incident.recommendations[0] && (
                     <div className="recommendation">
-                      <div className="recommend-head"><div><span>推荐处置</span><small className="risk">{incident.recommendations[0].risk} risk</small></div><code>{incident.recommendations[0].command}</code></div>
-                      <p>{incident.recommendations[0].title}</p>
+                      <div className="recommend-head"><div><span>推荐处置</span><small className="risk">{incident.recommendations[0].risk} risk</small></div><small>{incident.recommendations.length} 个有序动作</small></div>
+                      <div className="recommend-list">
+                        {incident.recommendations.map((recommendation, index) => (
+                          <div key={`${recommendation.command}-${index}`}>
+                            <code>{index + 1}. {recommendation.command}</code>
+                            <p>{recommendation.title}</p>
+                          </div>
+                        ))}
+                      </div>
                       <button onClick={() => analyze(true)} disabled={!!busy || incident.status === "resolved"}>{busy === "execute" ? "执行并验证中…" : incident.status === "resolved" ? "处置已完成" : "批准执行并验证"}</button>
                     </div>
                   )}
