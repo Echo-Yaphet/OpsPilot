@@ -120,5 +120,9 @@ container, every target dependency metric and service health to stabilize togeth
 This stage does not give the model authority over targets or ordering, add arbitrary
 commands, weaken Gateway/runtime allowlists, or change the public `IncidentState`, HTTP
 API, `IncidentWorkflow.run()` or `OpsTools` interfaces. The Stage 5 0/2 combined result
-remains an immutable historical baseline; the Stage 6 implementation has deterministic
-regression tests and one live Redis+MySQL acceptance, not a new statistical comparison.
+remains an immutable historical baseline. A separate Stage 6 reliability runner now
+repeats only the current deterministic combined-fault path without rewriting those frozen
+labels. Batch `stage6-combined-r5-20260915` completed 5/5 valid local Compose recoveries,
+including complete policy review, Redis-then-MySQL execution and fresh joint probes. Its
+Wilson 95% interval is 56.6%-100%, so it is evidence for the enumerated topology rather
+than a production SLA or proof for arbitrary combined faults.

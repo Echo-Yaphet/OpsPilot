@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -39,6 +39,17 @@ evaluate-stage5:
 		control-api env PYTHONPATH=/app python /app/scripts/run-stage5-evaluation.py \
 		$(if $(STAGE5_REPETITIONS),--repetitions $(STAGE5_REPETITIONS),) \
 		$(if $(STAGE5_EVALUATION_ID),--evaluation-id $(STAGE5_EVALUATION_ID),)
+
+evaluate-stage6:
+	test -n "$(STAGE6_EVALUATION_ID)" || (echo "STAGE6_EVALUATION_ID is required" && exit 2)
+	mkdir -p work/stage6-evaluations
+	docker compose run --rm --no-deps \
+		-v ./apps/control-api/opspilot:/app/opspilot:ro \
+		-v ./scripts:/app/scripts:ro \
+		-v ./work/stage6-evaluations:/app/evaluation-output \
+		control-api env PYTHONPATH=/app python /app/scripts/run-stage6-evaluation.py \
+		--evaluation-id $(STAGE6_EVALUATION_ID) \
+		$(if $(STAGE6_REPETITIONS),--repetitions $(STAGE6_REPETITIONS),)
 
 repair-lab-validate:
 	docker compose --profile repair-lab up -d --build repair-lab-redis repair-validator repair-sandbox repair-lab-payment

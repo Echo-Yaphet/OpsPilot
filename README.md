@@ -12,7 +12,7 @@ Stage 4 Skill promotion 由 Control API 提供独立注册表：编码 Agent 只
 
 Stage 5 通过 `EvaluationRunner.run(plan)` 提供不泄露 expected label 的留出配对评测。正式批次覆盖 16 个冻结场景、v2/v3 两臂和两次重复，共 64 条真实 Compose 试验；共享 seed、交替 arm 顺序、故障指标准入和独立恢复探针避免把环境异常或先后顺序误计为模型效果。完整结果与可用于简历的口径见 [Stage 5 评测报告](docs/evaluations/stage5-v2-v3-report.md)。
 
-Stage 6 已补齐评测暴露的 Redis+MySQL 组合故障缺口：确定性 RCA 同时识别两个依赖，生成 Redis→MySQL 有序建议；Safety 在执行前逐项审查，任一动作不合法则整批拒绝；显式批准后才通过原有 Gateway/broker/actuator 边界顺序执行，Verification 使用同一不可变策略快照联合检查两个容器、两个依赖指标和业务健康。模型仍不能决定 target、顺序、审批、执行或 `verified`。
+Stage 6 已补齐评测暴露的 Redis+MySQL 组合故障缺口：确定性 RCA 同时识别两个依赖，生成 Redis→MySQL 有序建议；Safety 在执行前逐项审查，任一动作不合法则整批拒绝；显式批准后才通过原有 Gateway/broker/actuator 边界顺序执行，Verification 使用同一不可变策略快照联合检查两个容器、两个依赖指标和业务健康。独立重复评测的首个批次完成 5/5 次真实组合故障恢复，并逐次核对全计划策略审查、执行顺序和联合探针；小样本 Wilson 95% 区间仍为 56.6%–100%，不能外推为生产 SLA。模型仍不能决定 target、顺序、审批、执行或 `verified`。完整结果见 [Stage 6 重复评测报告](docs/evaluations/stage6-combined-r5-report.md)。
 
 ## 快速启动
 
@@ -120,6 +120,16 @@ make evaluate-stage5 STAGE5_REPETITIONS=2 STAGE5_EVALUATION_ID=<unique-id>
 ```
 
 评测覆盖 Redis、MySQL、CPU、Redis+MySQL 组合故障、健康反证、回归轨迹及 8 类安全门。失败/超时不会从质量或成本分母删除；基础设施异常保留在原始记录并单独统计。产物写入 `work/stage5-evaluations/<unique-id>/` 且不允许覆盖同名批次。
+
+## Stage 6 组合故障重复评测
+
+Stage 6 使用独立入口评估当前确定性组合故障闭环，不改写 Stage 5 的冻结标签或历史结果：
+
+```bash
+make evaluate-stage6 STAGE6_REPETITIONS=5 STAGE6_EVALUATION_ID=<unique-id>
+```
+
+每轮先恢复健康基线，再停止 Redis 和 MySQL，等待 Prometheus 同时观测两个依赖为零，然后执行一次显式批准的确定性工作流。成功必须同时满足组合根因、Redis→MySQL 建议、两项策略均允许、Redis→MySQL 实际执行、工作流 `verified=true`，以及独立服务/容器/依赖探针全部通过。逐轮 checkpoint 会立即 `fsync`，最终只读产物写入 `work/stage6-evaluations/<unique-id>/` 且不可覆盖同名批次。
 
 ## Redis 宕机最小链路验收
 
