@@ -33,15 +33,39 @@ if os.getenv("WORKLOAD_IDENTITY_TARGET_PLACEMENTS_REQUIRED", "false").lower() ==
     if set(TARGET_PLACEMENTS) != set(DEFAULT_TARGETS):
         raise ValueError("WORKLOAD_IDENTITY_TARGET_PLACEMENTS must configure every target")
 ALLOWED_AUDIENCES = {
-    "control-api": {"opspilot-executor-gateway"},
+    "control-api": {"opspilot-executor-gateway", "opspilot-verification-policy-peer"},
     "executor-gateway": {"opspilot-runtime-executor"},
     "container-metrics-exporter": {"opspilot-runtime-executor"},
+    "verification-policy-rollout-controller": {"opspilot-verification-policy-peer"},
 }
 ALLOWED_OPERATIONS = {
-    "control-api": {"container_status", "restart_container", "stop_container"},
-    "executor-gateway": {"container_status", "restart_container", "stop_container"},
-    "container-metrics-exporter": {"container_stats"},
+    "control-api": {
+        "opspilot-executor-gateway": {
+            "container_status", "restart_container", "stop_container",
+        },
+        "opspilot-verification-policy-peer": {"read_verification_policy_status"},
+    },
+    "executor-gateway": {
+        "opspilot-runtime-executor": {
+            "container_status", "restart_container", "stop_container",
+        },
+    },
+    "container-metrics-exporter": {
+        "opspilot-runtime-executor": {"container_stats"},
+    },
+    "verification-policy-rollout-controller": {
+        "opspilot-verification-policy-peer": {"read_verification_policy_status"},
+    },
 }
+_policy_peer_targets = json.loads(os.getenv(
+    "WORKLOAD_IDENTITY_POLICY_PEER_TARGETS",
+    '["control-api","control-api-primary","control-api-canary"]',
+))
+if not isinstance(_policy_peer_targets, list) or not _policy_peer_targets or not all(
+    isinstance(target, str) and target for target in _policy_peer_targets
+):
+    raise ValueError("WORKLOAD_IDENTITY_POLICY_PEER_TARGETS is invalid")
+POLICY_PEER_TARGETS = frozenset(_policy_peer_targets)
 
 
 class IdentityRequest(BaseModel):
@@ -96,11 +120,16 @@ async def issue_identity(
     key_file = CLIENT_KEYS.get(subject)
     if not key_file or request.audience not in ALLOWED_AUDIENCES.get(subject, set()):
         raise HTTPException(status_code=403, detail="workload or audience is not allowlisted")
-    if request.operation not in ALLOWED_OPERATIONS[subject]:
+    if request.operation not in ALLOWED_OPERATIONS[subject][request.audience]:
         raise HTTPException(status_code=403, detail="workload operation is not allowlisted")
     if request.audience == "opspilot-runtime-executor":
         if TARGET_PLACEMENTS.get(request.target) != request.placement:
             raise HTTPException(status_code=403, detail="workload placement is not allowlisted")
+    elif request.audience == "opspilot-verification-policy-peer":
+        if request.target not in POLICY_PEER_TARGETS:
+            raise HTTPException(status_code=403, detail="policy peer target is not allowlisted")
+        if request.placement is not None:
+            raise HTTPException(status_code=403, detail="placement is not valid for this audience")
     elif request.placement is not None:
         raise HTTPException(status_code=403, detail="placement is not valid for this audience")
     if not all((x_workload_timestamp, x_workload_nonce, x_workload_signature)):

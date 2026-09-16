@@ -73,6 +73,11 @@ def test_external_issuer_rejects_proof_replay_and_unallowed_audience(tmp_path, m
     denied_headers = sign_issuer_request(control_private, "control-api", payload)
     assert client.post("/v1/identity", json=payload, headers=denied_headers).status_code == 403
 
+    payload = identity_request()
+    payload["audience"] = "opspilot-verification-policy-peer"
+    denied_headers = sign_issuer_request(control_private, "control-api", payload)
+    assert client.post("/v1/identity", json=payload, headers=denied_headers).status_code == 403
+
 
 def test_external_issuer_binds_runtime_identity_to_allowlisted_placement(tmp_path, monkeypatch):
     gateway_private, gateway_public = key_pair()
@@ -101,6 +106,52 @@ def test_external_issuer_binds_runtime_identity_to_allowlisted_placement(tmp_pat
     denied = client.post(
         "/v1/identity", json=payload,
         headers=sign_issuer_request(gateway_private, "executor-gateway", payload),
+    )
+    assert denied.status_code == 403
+
+
+def test_external_issuer_authorizes_policy_peers_without_shared_secret(tmp_path, monkeypatch):
+    controller_private, controller_public = key_pair()
+    controller_public_path = tmp_path / "policy-controller-public.pem"
+    controller_public_path.write_bytes(controller_public)
+    module, client, _, issuer_public = load_issuer(tmp_path, monkeypatch)
+    module.CLIENT_KEYS["verification-policy-rollout-controller"] = str(controller_public_path)
+    payload = {
+        "audience": "opspilot-verification-policy-peer",
+        "ttl_seconds": 10,
+        "method": "GET",
+        "path": "/api/v1/verification-policy/peer-status",
+        "operation": "read_verification_policy_status",
+        "target": "control-api-canary",
+    }
+    response = client.post(
+        "/v1/identity",
+        json=payload,
+        headers=sign_issuer_request(
+            controller_private, "verification-policy-rollout-controller", payload
+        ),
+    )
+    assert response.status_code == 200
+    identity = verify_external_identity(
+        response.json()["token"],
+        issuer_public,
+        key_id=module.KEY_ID,
+        issuer=module.ISSUER,
+        audience="opspilot-verification-policy-peer",
+        method="GET",
+        path=payload["path"],
+        maximum_ttl_seconds=15,
+    )
+    assert identity["sub"] == "verification-policy-rollout-controller"
+    assert identity["target"] == "control-api-canary"
+
+    payload["target"] = "unknown-policy-node"
+    denied = client.post(
+        "/v1/identity",
+        json=payload,
+        headers=sign_issuer_request(
+            controller_private, "verification-policy-rollout-controller", payload
+        ),
     )
     assert denied.status_code == 403
 

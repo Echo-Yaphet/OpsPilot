@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 from opspilot.config import create_signed_verification_policy_bundle
+from workload_identity import mint_identity, sign_issuer_request
 
 
 def atomic_write(path: Path, content: bytes) -> None:
@@ -150,6 +151,113 @@ async def verify(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+async def verify_identity(args: argparse.Namespace) -> None:
+    issuer_url = os.getenv(
+        "WORKLOAD_IDENTITY_ISSUER_URL", "http://workload-identity-issuer:8085"
+    ).rstrip("/")
+    private_key = Path(os.getenv(
+        "WORKLOAD_IDENTITY_PRIVATE_KEY_FILE",
+        "/identity/policy-controller-private/private.pem",
+    )).read_bytes()
+    subject = "verification-policy-rollout-controller"
+    peer_path = "/api/v1/verification-policy/peer-status"
+    payload = {
+        "audience": "opspilot-verification-policy-peer",
+        "ttl_seconds": 10,
+        "method": "GET",
+        "path": peer_path,
+        "operation": "read_verification_policy_status",
+        "target": "control-api-canary",
+    }
+    proof_headers = sign_issuer_request(private_key, subject, payload)
+    legacy_token = mint_identity(
+        "retired-shared-hmac",
+        issuer="opspilot-control-api",
+        audience=payload["audience"],
+        subject=subject,
+        ttl_seconds=10,
+        method="GET",
+        path=peer_path,
+        operation=payload["operation"],
+        target=payload["target"],
+        key_id="verification-policy-peer-v1",
+    )
+    async with httpx.AsyncClient(timeout=10) as client:
+        issued = await client.post(
+            f"{issuer_url}/v1/identity", json=payload, headers=proof_headers
+        )
+        proof_replay = await client.post(
+            f"{issuer_url}/v1/identity", json=payload, headers=proof_headers
+        )
+        denied_payload = {**payload, "target": "unknown-policy-node"}
+        denied = await client.post(
+            f"{issuer_url}/v1/identity",
+            json=denied_payload,
+            headers=sign_issuer_request(private_key, subject, denied_payload),
+        )
+        missing = await client.get(f"http://control-api-canary:8080{peer_path}")
+        legacy = await client.get(
+            f"http://control-api-canary:8080{peer_path}",
+            headers={"Authorization": f"Bearer {legacy_token}"},
+        )
+        valid_token = issued.json().get("token", "") if issued.status_code == 200 else ""
+        accepted = await client.get(
+            f"http://control-api-canary:8080{peer_path}",
+            headers={"Authorization": f"Bearer {valid_token}"},
+        )
+        credential_replay = await client.get(
+            f"http://control-api-canary:8080{peer_path}",
+            headers={"Authorization": f"Bearer {valid_token}"},
+        )
+        wrong_target_payload = {**payload, "target": "control-api-primary"}
+        wrong_target_issue = await client.post(
+            f"{issuer_url}/v1/identity",
+            json=wrong_target_payload,
+            headers=sign_issuer_request(private_key, subject, wrong_target_payload),
+        )
+        wrong_target = await client.get(
+            f"http://control-api-canary:8080{peer_path}",
+            headers={
+                "Authorization": f"Bearer {wrong_target_issue.json().get('token', '')}"
+            },
+        )
+
+    statuses = {
+        "issuer": issued.status_code,
+        "issuer_proof_replay": proof_replay.status_code,
+        "issuer_unknown_target": denied.status_code,
+        "missing_credential": missing.status_code,
+        "retired_hmac": legacy.status_code,
+        "external_credential": accepted.status_code,
+        "credential_replay": credential_replay.status_code,
+        "wrong_target": wrong_target.status_code,
+    }
+    checks = {
+        "controller_proof_accepted": statuses["issuer"] == 200,
+        "issuer_nonce_replay_rejected": statuses["issuer_proof_replay"] == 401,
+        "issuer_target_allowlist_enforced": statuses["issuer_unknown_target"] == 403,
+        "missing_credential_rejected": statuses["missing_credential"] == 401,
+        "shared_hmac_retired": statuses["retired_hmac"] == 401,
+        "external_credential_accepted": statuses["external_credential"] == 200,
+        "credential_replay_rejected": statuses["credential_replay"] == 401,
+        "target_binding_enforced": statuses["wrong_target"] == 401,
+    }
+    report = {
+        "evaluation_id": args.evaluation_id,
+        "verified_at": time.time(),
+        "passed": all(checks.values()),
+        "checks": checks,
+        "http_statuses": statuses,
+        "identity_subject": subject,
+        "audience": payload["audience"],
+    }
+    output = Path(args.evidence) / "identity-verification.json"
+    atomic_write(output, (json.dumps(report, sort_keys=True, indent=2) + "\n").encode())
+    print(json.dumps({"output": str(output), **report}, sort_keys=True))
+    if not report["passed"]:
+        raise SystemExit(1)
+
+
 async def verify_resume(args: argparse.Namespace) -> None:
     await verify(args)
     audit = read_audit(args.audit_file)
@@ -199,6 +307,9 @@ def parse_args() -> argparse.Namespace:
     verify_parser.add_argument("--evaluation-id", required=True)
     verify_parser.add_argument("--evidence", required=True)
     verify_parser.add_argument("--candidate-revision", required=True, type=int)
+    identity_parser = subparsers.add_parser("verify-identity")
+    identity_parser.add_argument("--evaluation-id", required=True)
+    identity_parser.add_argument("--evidence", required=True)
     interruption_parser = subparsers.add_parser("verify-interruption")
     interruption_parser.add_argument("--evidence", required=True)
     interruption_parser.add_argument("--audit-file", required=True)
@@ -223,5 +334,7 @@ if __name__ == "__main__":
         verify_interruption(arguments)
     elif arguments.command == "verify-resume":
         asyncio.run(verify_resume(arguments))
+    elif arguments.command == "verify-identity":
+        asyncio.run(verify_identity(arguments))
     else:
         asyncio.run(verify(arguments))

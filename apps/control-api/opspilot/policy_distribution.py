@@ -8,7 +8,8 @@ from threading import Lock
 from typing import Callable, Mapping, Protocol
 
 import httpx
-from workload_identity import IdentityError, mint_identity, verify_identity
+from issuer_client import request_identity
+from workload_identity import IdentityError, verify_external_identity
 
 
 PEER_STATUS_PATH = "/api/v1/verification-policy/peer-status"
@@ -130,20 +131,20 @@ class VerificationPolicyRolloutReporter:
         peers: Mapping[str, str] | None = None,
         timeout: float = 2,
         max_concurrency: int = 4,
-        identity_key: str = "opspilot-local-policy-peer-key",
-        identity_key_id: str = "verification-policy-peer-v1",
-        identity_issuer: str = "opspilot-control-api",
+        identity_issuer_url: str = "http://workload-identity-issuer:8085",
+        identity_private_key_file: str = "/identity/control-private/private.pem",
         identity_audience: str = "opspilot-verification-policy-peer",
+        identity_subject: str = "control-api",
         identity_ttl_seconds: int = 10,
     ):
         self.node_id = node_id
         self.peers = dict(peers or {})
         self.timeout = timeout
         self.max_concurrency = max_concurrency
-        self.identity_key = identity_key
-        self.identity_key_id = identity_key_id
-        self.identity_issuer = identity_issuer
+        self.identity_issuer_url = identity_issuer_url
+        self.identity_private_key_file = identity_private_key_file
         self.identity_audience = identity_audience
+        self.identity_subject = identity_subject
         self.identity_ttl_seconds = identity_ttl_seconds
 
     @staticmethod
@@ -163,18 +164,17 @@ class VerificationPolicyRolloutReporter:
             "using_cache": bool(distribution.get("using_cache", False)),
         }
 
-    def _headers(self, target_node_id: str) -> dict[str, str]:
-        credential = mint_identity(
-            self.identity_key,
-            issuer=self.identity_issuer,
+    async def _headers(self, target_node_id: str) -> dict[str, str]:
+        credential = await request_identity(
+            self.identity_issuer_url,
+            self.identity_private_key_file,
+            self.identity_subject,
             audience=self.identity_audience,
-            subject=self.node_id,
             ttl_seconds=self.identity_ttl_seconds,
             method="GET",
             path=PEER_STATUS_PATH,
             operation=PEER_STATUS_OPERATION,
             target=target_node_id,
-            key_id=self.identity_key_id,
         )
         return {"Authorization": f"Bearer {credential}"}
 
@@ -205,7 +205,7 @@ class VerificationPolicyRolloutReporter:
             async with semaphore:
                 response = await client.get(
                     f"{base_url.rstrip('/')}{PEER_STATUS_PATH}",
-                    headers=self._headers(node_id),
+                    headers=await self._headers(node_id),
                 )
                 response.raise_for_status()
                 return self._node_status(node_id, response.json())
@@ -298,38 +298,47 @@ class VerificationPolicyPeerAuthenticator:
     def __init__(
         self,
         node_id: str,
-        identity_key: str,
+        identity_public_key_file: str,
         identity_key_id: str,
         identity_issuer: str,
         identity_audience: str,
         maximum_ttl_seconds: int,
         consume: Callable[[str, str, int], None],
+        allowed_subjects: frozenset[str] = frozenset(
+            {"control-api", "verification-policy-rollout-controller"}
+        ),
     ):
         self.node_id = node_id
-        self.identity_key = identity_key
+        self.identity_public_key_file = identity_public_key_file
         self.identity_key_id = identity_key_id
         self.identity_issuer = identity_issuer
         self.identity_audience = identity_audience
         self.maximum_ttl_seconds = maximum_ttl_seconds
         self.consume = consume
+        self.allowed_subjects = allowed_subjects
 
     def verify(self, authorization: str | None) -> dict:
         prefix = "Bearer "
         if not authorization or not authorization.startswith(prefix):
             raise IdentityError("peer credential is required")
-        identity = verify_identity(
+        try:
+            public_key = Path(self.identity_public_key_file).read_bytes()
+        except OSError as exc:
+            raise IdentityError(f"external issuer trust is unavailable: {exc}") from exc
+        identity = verify_external_identity(
             authorization[len(prefix):],
-            self.identity_key,
+            public_key,
+            key_id=self.identity_key_id,
             issuer=self.identity_issuer,
             audience=self.identity_audience,
             method="GET",
             path=PEER_STATUS_PATH,
             maximum_ttl_seconds=self.maximum_ttl_seconds,
-            key_id=self.identity_key_id,
         )
         if (
             identity["operation"] != PEER_STATUS_OPERATION
             or identity["target"] != self.node_id
+            or identity["sub"] not in self.allowed_subjects
         ):
             raise IdentityError("peer credential claims do not match this node")
         try:

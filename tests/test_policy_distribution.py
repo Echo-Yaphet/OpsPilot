@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from opspilot.config import (
     Settings,
@@ -20,11 +22,30 @@ from opspilot.policy_distribution import (
     VerificationPolicyRolloutReporter,
 )
 from opspilot.storage import IncidentStore
-from workload_identity import IdentityError, mint_identity
+from workload_identity import IdentityError, mint_external_identity
 
 
 SIGNING_KEY = "distribution-signing-key"
 KEY_ID = "policy-v1"
+
+
+def identity_key_pair():
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return (
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+        key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ),
+    )
+
+
+async def issued_peer_identity(*_args, **_kwargs):
+    return "externally-issued-peer-credential"
 
 
 def bundle_bytes(revision: int, attempts: int = 8) -> bytes:
@@ -136,6 +157,9 @@ def test_policy_distributor_requires_bearer_identity(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_rollout_reporter_reports_convergence_and_offline_nodes(monkeypatch):
+    monkeypatch.setattr(
+        "opspilot.policy_distribution.request_identity", issued_peer_identity
+    )
     status = {
         "bundle_revision": 103,
         "content_digest": "sha256:" + "a" * 64,
@@ -217,31 +241,35 @@ async def test_rollout_reporter_reports_convergence_and_offline_nodes(monkeypatc
 
 
 def peer_credential(
+    private_key,
     *, target="canary", path=PEER_STATUS_PATH, operation=PEER_STATUS_OPERATION,
-    ttl_seconds=10, credential_id=None,
+    ttl_seconds=10, credential_id=None, subject="control-api",
 ):
-    return mint_identity(
-        "peer-identity-key",
-        issuer="opspilot-control-api",
+    return mint_external_identity(
+        private_key,
+        key_id="opspilot-issuer-v1",
+        issuer="opspilot-workload-identity-issuer",
         audience="opspilot-verification-policy-peer",
-        subject="primary",
+        subject=subject,
         ttl_seconds=ttl_seconds,
         method="GET",
         path=path,
         operation=operation,
         target=target,
         credential_id=credential_id,
-        key_id="peer-v1",
     )
 
 
 def test_peer_status_identity_is_short_lived_request_bound_and_replay_safe(tmp_path):
+    private_key, public_key = identity_key_pair()
+    public_key_path = tmp_path / "issuer-public.pem"
+    public_key_path.write_bytes(public_key)
     store = IncidentStore(str(tmp_path / "canary.db"))
     authenticator = VerificationPolicyPeerAuthenticator(
         "canary",
-        "peer-identity-key",
-        "peer-v1",
-        "opspilot-control-api",
+        str(public_key_path),
+        "opspilot-issuer-v1",
+        "opspilot-workload-identity-issuer",
         "opspilot-verification-policy-peer",
         10,
         store.consume_verification_policy_peer_credential,
@@ -250,23 +278,27 @@ def test_peer_status_identity_is_short_lived_request_bound_and_replay_safe(tmp_p
     with pytest.raises(IdentityError, match="required"):
         authenticator.verify(None)
     with pytest.raises(IdentityError, match="bound to this request"):
-        authenticator.verify(f"Bearer {peer_credential(path='/api/v1/verification-policy/status')}")
+        authenticator.verify(f"Bearer {peer_credential(private_key, path='/api/v1/verification-policy/status')}")
     with pytest.raises(IdentityError, match="claims do not match"):
-        authenticator.verify(f"Bearer {peer_credential(target='other-node')}")
+        authenticator.verify(f"Bearer {peer_credential(private_key, target='other-node')}")
+    with pytest.raises(IdentityError, match="claims do not match"):
+        authenticator.verify(
+            f"Bearer {peer_credential(private_key, subject='untrusted-workload')}"
+        )
     with pytest.raises(IdentityError, match="lifetime is invalid"):
-        authenticator.verify(f"Bearer {peer_credential(ttl_seconds=11)}")
+        authenticator.verify(f"Bearer {peer_credential(private_key, ttl_seconds=11)}")
 
-    token = peer_credential(credential_id="one-time-peer-status")
+    token = peer_credential(private_key, credential_id="one-time-peer-status")
     identity = authenticator.verify(f"Bearer {token}")
-    assert identity["sub"] == "primary"
+    assert identity["sub"] == "control-api"
     with pytest.raises(IdentityError, match="already been used"):
         authenticator.verify(f"Bearer {token}")
 
     restarted = VerificationPolicyPeerAuthenticator(
         "canary",
-        "peer-identity-key",
-        "peer-v1",
-        "opspilot-control-api",
+        str(public_key_path),
+        "opspilot-issuer-v1",
+        "opspilot-workload-identity-issuer",
         "opspilot-verification-policy-peer",
         10,
         IncidentStore(str(tmp_path / "canary.db")).consume_verification_policy_peer_credential,
@@ -277,6 +309,9 @@ def test_peer_status_identity_is_short_lived_request_bound_and_replay_safe(tmp_p
 
 @pytest.mark.asyncio
 async def test_rollout_reporter_bounds_parallel_fanout_and_keeps_partial_results(monkeypatch):
+    monkeypatch.setattr(
+        "opspilot.policy_distribution.request_identity", issued_peer_identity
+    )
     status = {
         "bundle_revision": 103,
         "content_digest": "sha256:" + "a" * 64,

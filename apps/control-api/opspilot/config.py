@@ -357,9 +357,9 @@ class Settings(BaseSettings):
     verification_policy_rollout_nodes: dict[str, str] = Field(default_factory=dict)
     verification_policy_rollout_timeout: float = Field(default=2, gt=0, le=30)
     verification_policy_rollout_max_concurrency: int = Field(default=4, ge=1, le=32)
-    verification_policy_peer_identity_key: str = "opspilot-local-policy-peer-key"
-    verification_policy_peer_identity_key_id: str = "verification-policy-peer-v1"
-    verification_policy_peer_identity_issuer: str = "opspilot-control-api"
+    verification_policy_peer_identity_public_key_file: str = "/identity/issuer-public/public.pem"
+    verification_policy_peer_identity_key_id: str = "opspilot-issuer-v1"
+    verification_policy_peer_identity_issuer: str = "opspilot-workload-identity-issuer"
     verification_policy_peer_identity_audience: str = "opspilot-verification-policy-peer"
     verification_policy_peer_identity_ttl_seconds: int = Field(default=10, ge=1, le=30)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -419,8 +419,8 @@ class Settings(BaseSettings):
             raise ValueError("verification policy node ID must be 1-64 safe characters")
         if any(not node.strip() or not url.strip() for node, url in self.verification_policy_rollout_nodes.items()):
             raise ValueError("verification policy rollout nodes need nonempty IDs and URLs")
-        if not self.verification_policy_peer_identity_key.strip():
-            raise ValueError("verification policy peer identity key must not be empty")
+        if not self.verification_policy_peer_identity_public_key_file.strip():
+            raise ValueError("verification policy peer identity public key file must not be empty")
         if not re.fullmatch(
             r"[A-Za-z0-9._-]{1,64}", self.verification_policy_peer_identity_key_id
         ):

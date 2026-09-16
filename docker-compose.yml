@@ -25,6 +25,8 @@ services:
       - workload-gateway-public:/identity/gateway-public
       - workload-metrics-private:/identity/metrics-private
       - workload-metrics-public:/identity/metrics-public
+      - workload-policy-controller-private:/identity/policy-controller-private
+      - workload-policy-controller-public:/identity/policy-controller-public
 
   workload-identity-issuer:
     <<: *service-common
@@ -34,13 +36,14 @@ services:
     environment:
       WORKLOAD_IDENTITY_SIGNING_KEY_FILE: /identity/issuer-private/private.pem
       WORKLOAD_IDENTITY_DATABASE_PATH: /data/issuer.db
-      WORKLOAD_IDENTITY_CLIENT_KEYS: '{"control-api":"/identity/control-public/public.pem","executor-gateway":"/identity/gateway-public/public.pem","container-metrics-exporter":"/identity/metrics-public/public.pem"}'
+      WORKLOAD_IDENTITY_CLIENT_KEYS: '{"control-api":"/identity/control-public/public.pem","executor-gateway":"/identity/gateway-public/public.pem","container-metrics-exporter":"/identity/metrics-public/public.pem","verification-policy-rollout-controller":"/identity/policy-controller-public/public.pem"}'
       WORKLOAD_IDENTITY_TARGET_PLACEMENTS: '{"redis":"local-compose","mysql":"local-compose","user-service":"local-compose","order-service":"local-compose","payment-service":"local-compose","prometheus":"local-compose","alertmanager":"local-compose","loki":"local-compose"}'
     volumes:
       - workload-issuer-private:/identity/issuer-private:ro
       - workload-control-public:/identity/control-public:ro
       - workload-gateway-public:/identity/gateway-public:ro
       - workload-metrics-public:/identity/metrics-public:ro
+      - workload-policy-controller-public:/identity/policy-controller-public:ro
       - workload-issuer-data:/data
     networks: [opspilot, executor-runtime]
     depends_on:
@@ -213,14 +216,15 @@ services:
       VERIFICATION_POLICY_ROLLOUT_NODES: '${VERIFICATION_POLICY_ROLLOUT_NODES:-{}}'
       VERIFICATION_POLICY_ROLLOUT_TIMEOUT: ${VERIFICATION_POLICY_ROLLOUT_TIMEOUT:-2}
       VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY: ${VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY:-4}
-      VERIFICATION_POLICY_PEER_IDENTITY_KEY: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY:-opspilot-local-policy-peer-key}
-      VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID:-verification-policy-peer-v1}
+      VERIFICATION_POLICY_PEER_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
+      VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID: opspilot-issuer-v1
       VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS: ${VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS:-10}
     ports: ["8080:8080"]
     volumes:
       - control-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
+      - workload-issuer-public:/identity/issuer-public:ro
     depends_on:
       prometheus: {condition: service_started}
       loki: {condition: service_started}
@@ -253,15 +257,17 @@ services:
       dockerfile: apps/policy-rollout-controller/Dockerfile
     environment:
       VERIFICATION_POLICY_SIGNING_KEYS: '${VERIFICATION_POLICY_SIGNING_KEYS:-{}}'
-      VERIFICATION_POLICY_PEER_IDENTITY_KEY: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY:-opspilot-local-policy-peer-key}
-      VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID:-verification-policy-peer-v1}
+      WORKLOAD_IDENTITY_ISSUER_URL: http://workload-identity-issuer:8085
+      WORKLOAD_IDENTITY_PRIVATE_KEY_FILE: /identity/policy-controller-private/private.pem
       VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS: ${VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS:-10}
     volumes:
       - ./work/policy-rollouts:/input:ro
       - ./work/policy-rollouts:/evidence
       - verification-policy-rollout:/rollout
+      - workload-policy-controller-private:/identity/policy-controller-private:ro
     depends_on:
       policy-distributor: {condition: service_started}
+      workload-identity-issuer: {condition: service_started}
 
   control-api-canary:
     <<: *service-common
@@ -315,13 +321,14 @@ services:
       VERIFICATION_POLICY_ROLLOUT_NODES: '{}'
       VERIFICATION_POLICY_ROLLOUT_TIMEOUT: ${VERIFICATION_POLICY_ROLLOUT_TIMEOUT:-2}
       VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY: ${VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY:-4}
-      VERIFICATION_POLICY_PEER_IDENTITY_KEY: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY:-opspilot-local-policy-peer-key}
-      VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID: ${VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID:-verification-policy-peer-v1}
+      VERIFICATION_POLICY_PEER_IDENTITY_PUBLIC_KEY_FILE: /identity/issuer-public/public.pem
+      VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID: opspilot-issuer-v1
       VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS: ${VERIFICATION_POLICY_PEER_IDENTITY_TTL_SECONDS:-10}
     volumes:
       - control-canary-data:/data
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
+      - workload-issuer-public:/identity/issuer-public:ro
     depends_on:
       prometheus: {condition: service_started}
       loki: {condition: service_started}
@@ -807,6 +814,8 @@ volumes:
   workload-gateway-public: {}
   workload-metrics-private: {}
   workload-metrics-public: {}
+  workload-policy-controller-private: {}
+  workload-policy-controller-public: {}
   repair-lab-workspace: {}
   repair-lab-data: {}
   memory-data: {}

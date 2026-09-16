@@ -209,6 +209,24 @@ incidents remained present, and no execution or Verification row was created.
 This closes the first reproducible local network-partition and PostgreSQL endpoint-failover
 rehearsal, not the real cross-host requirement. It has no automatic leader election, fencing,
 old-primary rejoin, failure-window concurrent writes, managed-service behavior, cross-zone
-latency, RPO/RTO or production SLA result. The next safety node is to replace policy peer and
-controller shared-HMAC identity with external workload identity, then repeat failure-domain
-acceptance on real independent hosts or a managed HA PostgreSQL endpoint.
+latency, RPO/RTO or production SLA result. Stage 11 replaces policy peer and controller
+shared-HMAC identity with the existing external workload identity boundary; the remaining
+failure-domain acceptance belongs on real independent hosts or a managed HA PostgreSQL endpoint.
+
+## Stage 11: verification-policy external workload identity
+
+Status: completed on 2026-09-16. See
+[`docs/evaluations/stage11-policy-identity-r2-report.md`](evaluations/stage11-policy-identity-r2-report.md).
+
+Control API peer fan-out and the one-shot rollout controller now use separate asymmetric proof
+keys to request short-lived RS256 credentials from the independent workload identity issuer.
+The issuer allowlists workload subject, peer audience, read-only operation and target node before
+signing. Receiving nodes hold only issuer public trust, repeat the request/operation/target/subject
+checks and atomically consume each `jti`. The local shared peer HMAC configuration is removed;
+the HMAC wrapper around the pre-signed policy bundle remains a separate content-integrity boundary.
+
+Formal batch `stage11-policy-identity-r2-20260916` reached exact canary acceptance and 2/2 quorum
+at revision `2026091602`. Missing identity, the retired HS256 credential, wrong target and credential
+replay returned 401; issuer nonce replay returned 401 and an unknown peer target returned 403.
+This is same-host Compose evidence for the external issuer seam, not cloud-native federation,
+issuer HA, production key custody or cross-host failure-domain validation.

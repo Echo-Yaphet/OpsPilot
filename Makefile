@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate verification-policy-rollout-validate verification-policy-controller-resume-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate verification-policy-rollout-validate verification-policy-controller-resume-validate verification-policy-workload-identity-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -85,6 +85,13 @@ verification-policy-controller-resume-validate:
 		$(if $(STAGE9_BASELINE_REVISION),STAGE9_BASELINE_REVISION=$(STAGE9_BASELINE_REVISION),) \
 		$(if $(STAGE9_CANDIDATE_REVISION),STAGE9_CANDIDATE_REVISION=$(STAGE9_CANDIDATE_REVISION),) \
 		./scripts/validate-verification-policy-controller-resume.sh
+
+verification-policy-workload-identity-validate:
+	test -n "$(STAGE11_EVALUATION_ID)" || (echo "STAGE11_EVALUATION_ID is required" && exit 2)
+	STAGE11_EVALUATION_ID=$(STAGE11_EVALUATION_ID) \
+		$(if $(STAGE11_BASELINE_REVISION),STAGE11_BASELINE_REVISION=$(STAGE11_BASELINE_REVISION),) \
+		$(if $(STAGE11_CANDIDATE_REVISION),STAGE11_CANDIDATE_REVISION=$(STAGE11_CANDIDATE_REVISION),) \
+		./scripts/validate-verification-policy-workload-identity.sh
 
 repair-lab-validate:
 	docker compose --profile repair-lab up -d --build repair-lab-redis repair-validator repair-sandbox repair-lab-payment

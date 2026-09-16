@@ -28,5 +28,6 @@ for private_dir, public_dir in (
     ("/identity/control-private", "/identity/control-public"),
     ("/identity/gateway-private", "/identity/gateway-public"),
     ("/identity/metrics-private", "/identity/metrics-public"),
+    ("/identity/policy-controller-private", "/identity/policy-controller-public"),
 ):
     ensure_key_pair(private_dir, public_dir)

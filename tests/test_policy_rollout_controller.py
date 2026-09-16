@@ -40,6 +40,70 @@ def write_bundle(path: Path, revision: int, attempts: int = 8) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_node_status_reader_requests_external_workload_identity(monkeypatch):
+    module = load_controller_module()
+    requested = {}
+
+    async def request_identity(issuer_url, private_key_file, subject, **claims):
+        requested.update(
+            issuer_url=issuer_url,
+            private_key_file=private_key_file,
+            subject=subject,
+            **claims,
+        )
+        return "issuer-token"
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"load_result": "accepted"}
+
+    class Client:
+        def __init__(self, timeout):
+            assert timeout == 1.5
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, headers):
+            assert url.endswith(module.PEER_STATUS_PATH)
+            assert headers == {"Authorization": "Bearer issuer-token"}
+            return Response()
+
+    monkeypatch.setattr(module, "request_identity", request_identity)
+    monkeypatch.setattr(module.httpx, "AsyncClient", Client)
+    reader = module.AuthenticatedNodeStatusReader(
+        identity_issuer_url="http://issuer:8085",
+        identity_private_key_file="/identity/controller/private.pem",
+        identity_subject="verification-policy-rollout-controller",
+        identity_audience="opspilot-verification-policy-peer",
+        identity_ttl_seconds=10,
+        request_timeout_seconds=1.5,
+    )
+
+    assert await reader("control-api-canary", "http://canary:8080") == {
+        "load_result": "accepted"
+    }
+    assert requested == {
+        "issuer_url": "http://issuer:8085",
+        "private_key_file": "/identity/controller/private.pem",
+        "subject": "verification-policy-rollout-controller",
+        "audience": "opspilot-verification-policy-peer",
+        "ttl_seconds": 10,
+        "method": "GET",
+        "path": module.PEER_STATUS_PATH,
+        "operation": module.PEER_STATUS_OPERATION,
+        "target": "control-api-canary",
+        "timeout": 1.5,
+    }
+
+
+@pytest.mark.asyncio
 async def test_controller_requires_approval_and_preserves_stable(tmp_path):
     module = load_controller_module()
     candidate = tmp_path / "candidate.json"

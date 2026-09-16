@@ -7,7 +7,6 @@ candidate_revision=${STAGE8_CANDIDATE_REVISION:-2026091501}
 key_id=opspilot-stage8-local-v1
 signing_key=opspilot-stage8-local-signing-key
 distribution_token=opspilot-stage8-local-distribution-token
-peer_key=opspilot-stage8-local-peer-key
 evidence_dir=/evidence/$evaluation_id
 host_evidence_dir=work/policy-rollouts/$evaluation_id
 
@@ -18,7 +17,10 @@ restore_default() {
 trap restore_default EXIT
 
 docker compose --profile policy-rollout build \
+  workload-identity-bootstrap workload-identity-issuer \
   policy-distributor policy-rollout-controller control-api control-api-canary
+docker compose run --rm --no-deps workload-identity-bootstrap
+docker compose up -d --no-deps --force-recreate workload-identity-issuer
 
 docker compose --profile policy-rollout run --rm --no-deps --entrypoint python \
   policy-rollout-controller /app/evaluation.py prepare \
@@ -37,12 +39,10 @@ VERIFICATION_POLICY_CANARY_DISTRIBUTION_URL=http://policy-distributor:8070/bundl
 VERIFICATION_POLICY_DISTRIBUTION_TOKEN="$distribution_token" \
 VERIFICATION_POLICY_NODE_ID=control-api-primary \
 VERIFICATION_POLICY_ROLLOUT_NODES='{"control-api-canary":"http://control-api-canary:8080"}' \
-VERIFICATION_POLICY_PEER_IDENTITY_KEY="$peer_key" \
 docker compose --profile policy-rollout up -d --force-recreate --wait \
   policy-distributor control-api control-api-canary
 
 VERIFICATION_POLICY_SIGNING_KEYS="{\"$key_id\":\"$signing_key\"}" \
-VERIFICATION_POLICY_PEER_IDENTITY_KEY="$peer_key" \
 docker compose --profile policy-rollout run --rm --no-deps policy-rollout-controller \
   --candidate "$evidence_dir/candidate.json" \
   --canary-bundle /rollout/canary.json \

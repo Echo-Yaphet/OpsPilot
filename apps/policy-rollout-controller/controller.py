@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Mapping
 
 import httpx
+from issuer_client import request_identity
 
 from opspilot.config import (
     SignedVerificationPolicyBundle,
@@ -21,7 +22,6 @@ from opspilot.config import (
     verification_policy_signature,
 )
 from opspilot.policy_distribution import PEER_STATUS_OPERATION, PEER_STATUS_PATH
-from workload_identity import mint_identity
 
 
 StatusReader = Callable[[str, str], Awaitable[dict]]
@@ -363,32 +363,32 @@ class AuthenticatedNodeStatusReader:
     def __init__(
         self,
         *,
-        identity_key: str,
-        identity_key_id: str,
-        identity_issuer: str,
+        identity_issuer_url: str,
+        identity_private_key_file: str,
+        identity_subject: str,
         identity_audience: str,
         identity_ttl_seconds: int,
         request_timeout_seconds: float,
     ):
-        self.identity_key = identity_key
-        self.identity_key_id = identity_key_id
-        self.identity_issuer = identity_issuer
+        self.identity_issuer_url = identity_issuer_url
+        self.identity_private_key_file = identity_private_key_file
+        self.identity_subject = identity_subject
         self.identity_audience = identity_audience
         self.identity_ttl_seconds = identity_ttl_seconds
         self.request_timeout_seconds = request_timeout_seconds
 
     async def __call__(self, node_id: str, base_url: str) -> dict:
-        credential = mint_identity(
-            self.identity_key,
-            issuer=self.identity_issuer,
+        credential = await request_identity(
+            self.identity_issuer_url,
+            self.identity_private_key_file,
+            self.identity_subject,
             audience=self.identity_audience,
-            subject="verification-policy-rollout-controller",
             ttl_seconds=self.identity_ttl_seconds,
             method="GET",
             path=PEER_STATUS_PATH,
             operation=PEER_STATUS_OPERATION,
             target=node_id,
-            key_id=self.identity_key_id,
+            timeout=self.request_timeout_seconds,
         )
         async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
             response = await client.get(
@@ -442,13 +442,13 @@ async def _main() -> None:
     )
     nodes = _json_object(args.nodes_json, "nodes")
     status_reader = AuthenticatedNodeStatusReader(
-        identity_key=os.environ["VERIFICATION_POLICY_PEER_IDENTITY_KEY"],
-        identity_key_id=os.getenv(
-            "VERIFICATION_POLICY_PEER_IDENTITY_KEY_ID", "verification-policy-peer-v1"
+        identity_issuer_url=os.getenv(
+            "WORKLOAD_IDENTITY_ISSUER_URL", "http://workload-identity-issuer:8085"
         ),
-        identity_issuer=os.getenv(
-            "VERIFICATION_POLICY_PEER_IDENTITY_ISSUER", "opspilot-control-api"
+        identity_private_key_file=os.getenv(
+            "WORKLOAD_IDENTITY_PRIVATE_KEY_FILE", "/identity/policy-controller-private/private.pem"
         ),
+        identity_subject="verification-policy-rollout-controller",
         identity_audience=os.getenv(
             "VERIFICATION_POLICY_PEER_IDENTITY_AUDIENCE",
             "opspilot-verification-policy-peer",

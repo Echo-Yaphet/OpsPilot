@@ -94,7 +94,7 @@ def test_repair_agent_configuration_is_all_or_nothing(monkeypatch):
 
 
 @pytest.mark.parametrize("kwargs", [
-    {"verification_policy_peer_identity_key": ""},
+    {"verification_policy_peer_identity_public_key_file": ""},
     {"verification_policy_peer_identity_key_id": "bad key"},
     {"verification_policy_peer_identity_issuer": ""},
     {"verification_policy_peer_identity_audience": ""},

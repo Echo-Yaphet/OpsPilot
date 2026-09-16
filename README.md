@@ -22,6 +22,8 @@ Stage 9 为 rollout controller 增加可验证的中断恢复。候选与节点/
 
 Stage 10 新增可重复的 Control API 数据库故障域演练。正式批次隔离 primary 的数据库网络时，该节点在 15 秒边界内失败关闭，恢复网络后失败 incident 仍为 404，canary 同期保持可写；随后 primary 重新加入。physical-streaming standby 在追平后被提升，稳定数据库别名切换到新主库，两个 Control API 无需重建即恢复写入与跨节点读取，4/4 范围内 incident 保留且无执行/Verification 副作用。这仍是同一 Docker Desktop 主机上的故障域仿真，不是跨主机 HA、自动选主或 SLA。完整结果见 [Stage 10 故障域报告](docs/evaluations/stage10-fault-domain-r5-report.md)。
 
+Stage 11 将 verification-policy peer/controller 的本地共享 HMAC 身份接入现有外部 workload identity issuer。Control API 与 controller 各自持有 proof private key，按请求领取绑定 audience、subject、路径、只读 operation、目标节点和一次性 `jti` 的短期 RS256 credential；peer 只持 issuer public key。正式批次完成 canary→stable→2/2 quorum，并验证 issuer nonce 重放、未知节点、缺失凭证、旧 HMAC、credential 重放和错误 target 全部拒绝。完整结果见 [Stage 11 workload identity 报告](docs/evaluations/stage11-policy-identity-r2-report.md)。
+
 ## 快速启动
 
 要求：Docker Desktop、Docker Compose、curl，建议至少 6 GB 可用内存。
@@ -182,6 +184,17 @@ make control-api-fault-domain-validate \
 ```
 
 验收会隔离一个 Control API 的数据库网络，要求该节点失败关闭而另一节点保持可写，再恢复网络并确认重新加入；随后等待 physical-streaming standby 追平，停止旧主库、提升 standby、移动稳定数据库别名，并要求两个既有 Control API 恢复写入和交叉读取。所有请求均为 recommendation-only。结果写入 `work/fault-domain-evaluations/<unique-id>/` 并设为只读；临时数据库卷/网络会删除，默认 Control API 自动恢复到原 `memory-db`。该命令是本机故障域演练，不替代真实跨主机或托管 PostgreSQL HA 验收。
+
+## Stage 11 policy peer/controller workload identity 验收
+
+运行一次使用独立 controller proof key 和外部 RS256 issuer 的双节点策略 rollout：
+
+```bash
+make verification-policy-workload-identity-validate \
+  STAGE11_EVALUATION_ID=<unique-id>
+```
+
+验收要求 canary 精确接受后再推进 stable 并达到 2/2 quorum，同时验证 issuer proof nonce、peer credential 重放、未知 target、错误 target、缺失凭证和旧共享 HMAC 均 fail-closed。结果写入 `work/policy-rollouts/<unique-id>/`，成功后设为只读且不可覆盖。该本机 issuer 验收不替代云 workload identity federation、生产密钥托管或跨主机 issuer HA。
 
 ## Redis 宕机最小链路验收
 
@@ -387,13 +400,12 @@ VERIFICATION_POLICY_DISTRIBUTION_URL=http://policy-distributor:8070/bundle \
 VERIFICATION_POLICY_DISTRIBUTION_TOKEN=replace-with-distribution-token \
 VERIFICATION_POLICY_NODE_ID=control-api-primary \
 VERIFICATION_POLICY_ROLLOUT_NODES='{"control-api-canary":"http://control-api-canary:8080"}' \
-VERIFICATION_POLICY_PEER_IDENTITY_KEY=replace-with-peer-signing-secret \
 docker compose --profile policy-rollout up -d --build
 ```
 
 分发服务只有带 Bearer 身份的 `GET /bundle`，没有策略写入 API，也不映射宿主端口。每个 Control API 节点独立完成 key ID、HMAC、digest、严格 schema 和单调 revision 校验；只有接受成功的 bytes 才会原子更新该节点 `/data/verification-policy-cache.json`。篡改或无效更新不会覆盖缓存，分发服务离线或节点重启时继续使用本节点 last-known-good。未配置远端 URL 时，这些组件不会影响默认单节点启动。
 
-本地兼容接口 `GET /api/v1/verification-policy/status` 保持无需身份且只读。节点 fan-out 不再访问该接口，而是为每个目标即时签发最长 10 秒的 HMAC credential，绑定 key ID、issuer/audience、来源节点、`jti`、`GET`、peer-status 路径、读取操作和目标节点 ID；目标节点在自己的 SQLite 中原子消费 `jti`，重启后仍拒绝重放。内部 peer-status 端点缺失、错误、过期、请求不匹配或已消费的 credential 均返回 401。共享 peer key 仍只是本地 MVP 默认值，生产应替换为外部 workload identity。
+本地兼容接口 `GET /api/v1/verification-policy/status` 保持无需身份且只读。节点 fan-out 不再访问该接口；Control API 与 one-shot controller 使用各自的 RSA proof private key 向独立 workload identity issuer 领取最长 10 秒的 RS256 credential，绑定 issuer/audience、workload subject、`jti`、`GET`、peer-status 路径、读取操作和目标节点 ID。peer 节点只挂载 issuer public key，并在自己的持久化 store 中原子消费 `jti`，重启后仍拒绝重放。内部 peer-status 端点缺失、错误、过期、请求不匹配、错误 subject/target、旧 HS256 或已消费 credential 均返回 401。issuer 还在签发前限制 workload、audience、operation 和目标节点，并持久化拒绝 proof nonce 重放。
 
 `GET /api/v1/verification-policy/status` 同时显示 observed 与 accepted revision/digest、加载结果、分发连通性和缓存状态。`GET /api/v1/verification-policy/rollout` 使用 `VERIFICATION_POLICY_ROLLOUT_MAX_CONCURRENCY`（默认 4，范围 1–32）限制并行 peer 查询，并受 `VERIFICATION_POLICY_ROLLOUT_TIMEOUT` 约束；一个节点超时或离线不会丢弃其他节点结果。响应明确给出 `desired` revision/digest，以及 `rollout_state=converged|degraded|stalled|inactive`：全部节点接受 desired 且来源正常为 `converged`，peer 或分发源部分失败为 `degraded`，节点均在线但无法接受 desired 为 `stalled`，默认未启用签名 rollout 的单节点为 `inactive`。原有 `converged`、`healthy`、在线节点数和节点详情字段仍保留；该接口不是策略写入面或分布式共识系统。
 

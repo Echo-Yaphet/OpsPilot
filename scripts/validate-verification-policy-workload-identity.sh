@@ -1,19 +1,19 @@
 #!/usr/bin/env sh
 set -eu
 
-evaluation_id=${STAGE9_EVALUATION_ID:?STAGE9_EVALUATION_ID is required}
-baseline_revision=${STAGE9_BASELINE_REVISION:-2026091600}
-candidate_revision=${STAGE9_CANDIDATE_REVISION:-2026091601}
-key_id=opspilot-stage9-local-v1
-signing_key=opspilot-stage9-local-signing-key
-distribution_token=opspilot-stage9-local-distribution-token
+evaluation_id=${STAGE11_EVALUATION_ID:?STAGE11_EVALUATION_ID is required}
+baseline_revision=${STAGE11_BASELINE_REVISION:-2026091601}
+candidate_revision=${STAGE11_CANDIDATE_REVISION:-2026091602}
+key_id=opspilot-stage11-local-v1
+signing_key=opspilot-stage11-local-signing-key
+distribution_token=opspilot-stage11-local-distribution-token
 evidence_dir=/evidence/$evaluation_id
 host_evidence_dir=work/policy-rollouts/$evaluation_id
 nodes_json='{"control-api-primary":"http://control-api:8080","control-api-canary":"http://control-api-canary:8080"}'
 
 restore_default() {
   docker compose --profile active-active up -d --force-recreate --wait \
-    policy-distributor control-api control-api-canary >/dev/null
+    workload-identity-issuer policy-distributor control-api control-api-canary >/dev/null
 }
 trap restore_default EXIT
 
@@ -43,37 +43,6 @@ VERIFICATION_POLICY_ROLLOUT_NODES='{"control-api-canary":"http://control-api-can
 docker compose --profile policy-rollout up -d --force-recreate --wait \
   policy-distributor control-api control-api-canary
 
-if VERIFICATION_POLICY_SIGNING_KEYS="{\"$key_id\":\"$signing_key\"}" \
-  docker compose --profile policy-rollout run --rm --no-deps policy-rollout-controller \
-    --candidate "$evidence_dir/candidate.json" \
-    --canary-bundle /rollout/canary.json \
-    --stable-bundle /rollout/stable.json \
-    --nodes-json "$nodes_json" \
-    --canary-nodes control-api-canary \
-    --quorum 2 \
-    --approved \
-    --audit-file "$evidence_dir/audit.jsonl" \
-    --result-file "$evidence_dir/result.json" \
-    --interrupt-after canary_accepted; then
-  echo "controller crash injection unexpectedly returned success" >&2
-  exit 1
-else
-  interrupted_status=$?
-  if [ "$interrupted_status" -ne 75 ]; then
-    echo "controller crash injection returned $interrupted_status instead of 75" >&2
-    exit "$interrupted_status"
-  fi
-fi
-
-docker compose --profile policy-rollout run --rm --no-deps --entrypoint python \
-  policy-rollout-controller /app/evaluation.py verify-interruption \
-  --evidence "$evidence_dir" \
-  --audit-file "$evidence_dir/audit.jsonl" \
-  --canary-bundle /rollout/canary.json \
-  --stable-bundle /rollout/stable.json \
-  --baseline-revision "$baseline_revision" \
-  --candidate-revision "$candidate_revision"
-
 VERIFICATION_POLICY_SIGNING_KEYS="{\"$key_id\":\"$signing_key\"}" \
 docker compose --profile policy-rollout run --rm --no-deps policy-rollout-controller \
   --candidate "$evidence_dir/candidate.json" \
@@ -87,11 +56,14 @@ docker compose --profile policy-rollout run --rm --no-deps policy-rollout-contro
   --result-file "$evidence_dir/result.json"
 
 docker compose --profile policy-rollout run --rm --no-deps --entrypoint python \
-  policy-rollout-controller /app/evaluation.py verify-resume \
+  policy-rollout-controller /app/evaluation.py verify-identity \
+  --evaluation-id "$evaluation_id" \
+  --evidence "$evidence_dir"
+
+docker compose --profile policy-rollout run --rm --no-deps --entrypoint python \
+  policy-rollout-controller /app/evaluation.py verify \
   --evaluation-id "$evaluation_id" \
   --evidence "$evidence_dir" \
-  --audit-file "$evidence_dir/audit.jsonl" \
-  --stable-bundle /rollout/stable.json \
   --candidate-revision "$candidate_revision"
 
 chmod -R a-w "$host_evidence_dir"
