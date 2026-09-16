@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate verification-policy-rollout-validate verification-policy-controller-resume-validate verification-policy-workload-identity-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate external-fault-domain-evaluate verification-policy-rollout-validate verification-policy-controller-resume-validate verification-policy-workload-identity-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -71,6 +71,21 @@ control-api-fault-domain-validate:
 	mkdir -p work/fault-domain-evaluations
 	python3 scripts/validate-control-api-fault-domain.py \
 		--evaluation-id $(STAGE10_EVALUATION_ID)
+
+external-fault-domain-evaluate:
+	test -n "$(STAGE12_EVALUATION_ID)" || (echo "STAGE12_EVALUATION_ID is required" && exit 2)
+	test -f "work/external-fault-domain-input/$(STAGE12_EVALUATION_ID)/plan.json"
+	test -f "work/external-fault-domain-input/$(STAGE12_EVALUATION_ID)/observation.json"
+	mkdir -p work/external-fault-domain-evaluations
+	docker compose run --rm --no-deps \
+		-v ./apps/control-api/opspilot:/app/opspilot:ro \
+		-v ./scripts:/app/scripts:ro \
+		-v ./work:/app/work \
+		control-api env PYTHONPATH=/app python /app/scripts/evaluate-external-fault-domain-evidence.py \
+		--plan /app/work/external-fault-domain-input/$(STAGE12_EVALUATION_ID)/plan.json \
+		--observation /app/work/external-fault-domain-input/$(STAGE12_EVALUATION_ID)/observation.json \
+		--evidence-root /app/work/external-fault-domain-input/$(STAGE12_EVALUATION_ID)/raw \
+		--output /app/work/external-fault-domain-evaluations
 
 verification-policy-rollout-validate:
 	test -n "$(STAGE8_EVALUATION_ID)" || (echo "STAGE8_EVALUATION_ID is required" && exit 2)

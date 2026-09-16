@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-16 (Stage 11 verification-policy workload identity)
+Last updated: 2026-09-16 (Stage 12 external failure-domain acceptance contract)
 
 ## Continue from here
 
@@ -21,8 +21,10 @@ binding every durable phase to the approved rollout plan, reconciling actual cha
 revalidating canary before stable advancement. Stage 10 adds a reproducible same-host database
 network partition and physical-streaming PostgreSQL standby promotion rehearsal. Stage 11 moves
 peer/controller traffic from a local shared HMAC to the independent RS256 workload identity
-issuer with per-workload proof keys. The next resume-driven node is real cross-host or managed-HA
-failure-domain validation before production-quality claims.
+issuer with per-workload proof keys. Stage 12 now provides a strict, read-only, non-overwritable
+evidence contract for the real cross-host or managed-HA run; it cannot pass on a same-host plan.
+The next resume-driven node remains execution of that protocol on real external infrastructure
+before production-quality claims.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
 1. Read this document and `README.md`.
@@ -166,6 +168,14 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest implementation verification for the Stage 12 external failure-domain acceptance contract:
+
+- `ExternalFaultDomainPlan` rejects same-host/same-zone Control API, PostgreSQL or issuer topologies; the report requires network-partition fail-closed behavior without delayed commit, surviving and replacement node visibility, provider-confirmed database primary change behind a stable endpoint, redundant issuer continuity, trust digest continuity, peer first-use/replay/target denials, exact incident preservation and zero execution/Verification side effects.
+- The CLI requires raw `control-node`, `database-provider`, `identity-issuer` and `database-audit` files under one evidence root. It rejects absolute/escaping paths, symlinks, missing files and SHA-256 mismatches before a report can pass. Plan, observation, summary and report artifacts are read-only and same-name batches cannot overwrite them.
+- Six focused Stage 12 tests passed, including three distinct failure-domain validators, fail-closed missing provider/identity/trust/safety evidence, raw-file digest verification and immutable output. The rebuilt complete backend suite passed 193 tests.
+- Both Control API images were rebuilt and recreated. Final Compose rendering and smoke passed with service/dependency health, runtime-log mTLS, Loki, Tempo and recommendation-only non-execution; Prometheus validated all nine rules.
+- This verifies the evaluator and its fail-closed contract only. No real independent-host or managed-HA batch has run, so Stage 12 is not complete and no new HA, SLA, zero-data-loss, RPO or RTO claim is made. The external procedure is documented in `docs/evaluations/stage12-external-fault-domain-protocol.md`.
 
 Latest verification for Stage 11 verification-policy workload identity:
 
@@ -645,6 +655,7 @@ Local entry points:
 - `apps/control-api/opspilot/event_memory.py`: metadata-filtered PostgreSQL/pgvector event memory and atomic schema migration.
 - `apps/control-api/opspilot/observability.py`: opt-in Control API OpenTelemetry instrumentation.
 - `apps/control-api/opspilot/policy_distribution.py`: authenticated remote source, accepted-only cache, request-bound peer identity, and bounded multi-node rollout reporter.
+- `apps/control-api/opspilot/external_fault_domain_evaluation.py`: fail-closed external topology/evidence validation and immutable Stage 12 reporting.
 - `apps/policy-distributor/app.py`: authenticated read-only bundle endpoint used by the optional rollout profile.
 - `apps/dashboard/app/page.tsx`: Dashboard behavior and UI.
 - `apps/dashboard/app/globals.css`: Dashboard visual system.
@@ -663,12 +674,13 @@ Local entry points:
 - `infra/kubernetes/runtime-plane/`: Kustomize package for five workload-scoped placements, Gateway/issuer routing, NetworkPolicies, persistent quarantine state, and shared PostgreSQL.
 - `infra/otel-collector/` and `infra/tempo/`: OTLP Trace collection, forwarding, local retention and query configuration.
 - `scripts/validate-runtime-identity.py` and `scripts/validate-orchestrator-runtime.py`: repeatable default and cross-broker identity/replay acceptance.
+- `scripts/evaluate-external-fault-domain-evidence.py`: validates a real-host Stage 12 plan/observation pair without gaining infrastructure mutation authority.
 - `tests/test_workflow.py`: approval, policy allow/deny, Redis-path, graph inspection, inconclusive RCA, verification failure, and stale-log precedence tests.
 
 ## Current limitations
 
 - LangGraph orchestration checkpoints remain process-local, while the SDK investigation lifecycle is now resumable from PostgreSQL. A local Ollama model can perform bounded read-only investigation and generate/execute a bounded diagnostic manifest plus a prevalidated config candidate in the disposable repair lab. Deterministic rules remain authoritative for production targets, commands, policy, approval, execution, probes and verification truth. The repair lab remains a fixed demonstration target, not a general production Shell.
-- Shared PostgreSQL has passed a bounded two-process active-active Compose batch plus a same-host database-network partition and physical-streaming standby promotion rehearsal. It has not been tested across real hosts or availability zones, with automatic leader election/fencing, failure-window concurrent writes, old-primary rejoin, connection-pool exhaustion or a managed HA endpoint. SQLite remains only a local fallback.
+- Shared PostgreSQL has passed a bounded two-process active-active Compose batch plus a same-host database-network partition and physical-streaming standby promotion rehearsal. Stage 12 now rejects same-host plans and defines the required external evidence, but no real external batch exists yet. PostgreSQL has not been tested across real hosts or availability zones, with automatic leader election/fencing, failure-window concurrent writes, old-primary rejoin, connection-pool exhaustion or a managed HA endpoint. SQLite remains only a local fallback.
 - Typed deterministic retrieval, optional embedding ranking, filtered pgvector event memory, incident-time evidence correlation, and an expanded offline quality set are implemented. Event embeddings are populated only when an embedding provider is configured. Stage 5 provides time/topology-oriented held-out labels, paired repetitions, independent probes, latency and cost-per-success metrics, but its historical sample is deliberately small (12 recovery trials per arm). Stage 6 closes the observed Redis+MySQL workflow gap and has a dedicated 5/5 repeated local Compose batch plus deterministic regression coverage; its wide 56.6%-100% interval and single enumerated topology are not proof for arbitrary combined faults or production reliability.
 - Authenticated pull distribution, per-node validation/cache fallback, externally issued request-bound replay-safe peer status, bounded convergence reporting and an external canary-first quorum controller are implemented. The controller now recovers from enumerated process interruptions while its persistent volume survives, but remains bounded deployment coordination rather than distributed consensus; the issuer, distributor and rollout volume remain single-host, and the Stage 7-11 same-host results are not a production HA topology or cloud identity-federation proof.
 - Error logs inside the bounded incident window can still represent a recently recovered failure. Metrics take precedence for Redis/MySQL RCA; richer per-source confidence and scrape-delay handling are not yet implemented.
@@ -884,7 +896,7 @@ Local entry points:
 - Completed incident-time Prometheus/Loki/Alertmanager evidence correlation and a larger labeled retrieval evaluation set with explicit quality metrics and fallback/anomaly cases.
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Completed bounded same-host active-active load validation plus a local database-network partition and physical-streaming standby promotion rehearsal; production-quality claims still require real independent failure domains and managed HA PostgreSQL acceptance.
-- Completed the external explicit-approval canary-first rollout/quorum controller, same-volume process interruption recovery and peer/controller RS256 workload identity integration; next repeat node-loss and database failover acceptance across real hosts or availability zones, including issuer/trust availability in those failure domains.
+- Completed the external explicit-approval canary-first rollout/quorum controller, same-volume process interruption recovery and peer/controller RS256 workload identity integration. The fail-closed Stage 12 evidence contract is implemented; next supply a real multi-domain topology and run node-loss/database-failover/issuer-loss acceptance.
 - If another target platform requires it, add a cloud Secret CSI adapter behind the same strict bundle seam; Vault Agent is now the validated concrete controller.
 - Apply the rendered runtime plane to a real multi-node Kubernetes cluster, replace the acceptance PostgreSQL StatefulSet with managed HA PostgreSQL, publish immutable images/Secrets through the deployment system, and validate node loss plus placement rescheduling without replay/audit gaps.
 
@@ -892,4 +904,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md` and the Stage 6-11 reports, then refresh local Git and runtime status without assuming historical counts. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification. Stage 7 validates a two-node shared-store active-active profile. Stage 8 adds an external one-shot policy rollout controller with a pre-signed candidate, explicit approval, canary exact-acceptance gate, atomic stable publication, configured quorum and fsync audit. Stage 9 binds those phases to a rollout plan digest and resumes safely after controller process interruption. Stage 10 formal batch `stage10-fault-domain-r5-20260916` proves same-host database-network fail-closed/survivor behavior without delayed commit, node rejoin, physical-streaming standby catch-up and manual endpoint failover with both existing nodes resuming writes. Stage 11 formal batch `stage11-policy-identity-r2-20260916` replaces peer/controller shared HMAC with per-workload proof keys and externally issued request-bound RS256 credentials, reaching 2/2 convergence while rejecting missing, retired-HMAC, replayed, unknown-target and wrong-target identities. These are not real cross-host HA, cloud identity federation, automatic election/fencing or an SLA. Next repeat failure-domain acceptance across real hosts or managed HA PostgreSQL, including issuer/trust availability. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, monotonic Verification revisions, and protected IDE/system files. Kubernetes production rollout remains optional and is not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md`, the Stage 6-11 reports and `docs/evaluations/stage12-external-fault-domain-protocol.md`, then refresh local Git and runtime status without assuming historical counts. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification. Stage 7 validates a two-node shared-store active-active profile. Stage 8 adds an external one-shot policy rollout controller with a pre-signed candidate, explicit approval, canary exact-acceptance gate, atomic stable publication, configured quorum and fsync audit. Stage 9 binds those phases to a rollout plan digest and resumes safely after controller process interruption. Stage 10 formal batch `stage10-fault-domain-r5-20260916` proves same-host database-network fail-closed/survivor behavior without delayed commit, node rejoin, physical-streaming standby catch-up and manual endpoint failover with both existing nodes resuming writes. Stage 11 formal batch `stage11-policy-identity-r2-20260916` replaces peer/controller shared HMAC with per-workload proof keys and externally issued request-bound RS256 credentials, reaching 2/2 convergence while rejecting missing, retired-HMAC, replayed, unknown-target and wrong-target identities. Stage 12 now has a strict evaluator that rejects same-host topology and requires content-addressed external provider/control/identity/database evidence, but no real external batch exists. Next provide independent hosts or availability zones, managed or independently operated HA PostgreSQL and redundant issuer instances, then run the protocol. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, monotonic Verification revisions, and protected IDE/system files. Do not present the future batch as an SLA, zero-data-loss, RPO or RTO result. Kubernetes production rollout remains optional and is not the current resume-project priority.

@@ -196,6 +196,19 @@ make verification-policy-workload-identity-validate \
 
 验收要求 canary 精确接受后再推进 stable 并达到 2/2 quorum，同时验证 issuer proof nonce、peer credential 重放、未知 target、错误 target、缺失凭证和旧共享 HMAC 均 fail-closed。结果写入 `work/policy-rollouts/<unique-id>/`，成功后设为只读且不可覆盖。该本机 issuer 验收不替代云 workload identity federation、生产密钥托管或跨主机 issuer HA。
 
+## Stage 12 外部故障域验收契约
+
+Stage 12 只在真实独立主机/可用区和托管或独立运维的 HA PostgreSQL 上判定。基础设施平台负责执行网络分区、节点丢失、数据库 failover 和 issuer 实例丢失；OpsPilot 的评测模块不取得云平台、集群或数据库控制权限，只严格核对外部观测及其内容摘要：
+
+```bash
+make external-fault-domain-evaluate \
+  STAGE12_EVALUATION_ID=<unique-id>
+```
+
+输入固定为 `work/external-fault-domain-input/<unique-id>/plan.json` 和 `observation.json`。计划必须声明至少两个不同 Control API、PostgreSQL 和 issuer 故障域；观测必须包含 provider failover event、节点丢失/替换、数据库稳定端点、issuer 丢失期间签发、trust bundle digest、peer 首次使用/重放/错误 target，以及 recommendation-only 数据库审计。四类原始证据必须用 SHA-256 引用。缺少任一条件、使用同主机故障域或出现执行/Verification 副作用都会 fail-closed。只读结果写入 `work/external-fault-domain-evaluations/<unique-id>/` 且不可覆盖。
+
+该入口是可重复的证据判定契约，不会伪造外部环境。当前仓库尚无真实外部批次，因此 Stage 12 仍未完成；所需字段和采集顺序见 [Stage 12 外部故障域协议](docs/evaluations/stage12-external-fault-domain-protocol.md)。即使正式批次通过，也只证明枚举故障，不自动形成 SLA、零数据丢失、RPO 或 RTO 声明。
+
 ## Redis 宕机最小链路验收
 
 先启动系统并确认 `make smoke` 通过，然后：

@@ -230,3 +230,24 @@ at revision `2026091602`. Missing identity, the retired HS256 credential, wrong 
 replay returned 401; issuer nonce replay returned 401 and an unknown peer target returned 403.
 This is same-host Compose evidence for the external issuer seam, not cloud-native federation,
 issuer HA, production key custody or cross-host failure-domain validation.
+
+## Stage 12: external failure-domain acceptance
+
+Status: acceptance contract implemented; real external batch pending.
+
+The repository now has a fail-closed evidence module and CLI for the next real-host run. Its
+small interface accepts one immutable topology plan and one external observation document,
+then validates network partition, Control API node loss/replacement, provider-reported database
+failover, stable-endpoint recovery, cross-node visibility, issuer-instance loss, credential
+issuance during that loss, trust continuity, replay/target rejection and zero remediation side
+effects. Plans with fewer than two distinct Control API, database or issuer failure domains are
+rejected before reporting. Required raw control-node, database-provider, identity-issuer and
+database-audit evidence is referenced by SHA-256, and finalized artifacts are read-only and
+non-overwritable.
+
+Infrastructure fault injection deliberately remains outside OpsPilot. Completing this stage
+requires independently provisioned hosts or availability zones plus managed or independently
+operated HA PostgreSQL and redundant issuer instances. No local fixture can produce a passing
+formal result, and a future pass will still be bounded acceptance evidence rather than an SLA,
+zero-data-loss, RPO or RTO claim. See
+[`docs/evaluations/stage12-external-fault-domain-protocol.md`](evaluations/stage12-external-fault-domain-protocol.md).
