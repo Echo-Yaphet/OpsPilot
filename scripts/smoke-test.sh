@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 curl -fsS http://localhost:8080/health
-memory_status=$(curl -fsS http://localhost:8080/api/v1/system/memory/status)
+memory_status=$(curl -fsS http://localhost:3001/api/control/api/v1/system/memory/status)
 case "$memory_status" in
   *'"backend":"postgresql+pgvector"'*'"healthy":true'*) ;;
   *)
@@ -106,7 +106,7 @@ case "$fresh_container_metrics" in
     exit 1
     ;;
 esac
-curl -fsS -X POST http://localhost:8080/api/v1/incidents/analyze \
+curl -fsS -X POST http://localhost:3001/api/control/api/v1/incidents/analyze \
   -H 'content-type: application/json' \
   -d '{"service":"payment-service","symptom":"dependency unavailable"}'
 echo

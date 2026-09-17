@@ -93,7 +93,8 @@ class IncidentStore:
                 );
                 CREATE TABLE IF NOT EXISTS approvals (
                     id INTEGER PRIMARY KEY, incident_id TEXT NOT NULL, approved INTEGER NOT NULL,
-                    requested_execution INTEGER NOT NULL, created_at TEXT NOT NULL
+                    requested_execution INTEGER NOT NULL, created_at TEXT NOT NULL,
+                    approval_subject TEXT, approval_roles TEXT, request_id TEXT, credential_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS executions (
                     id INTEGER PRIMARY KEY, incident_id TEXT NOT NULL, command TEXT,
@@ -124,13 +125,37 @@ class IncidentStore:
                     credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
                     expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS api_approval_credentials (
+                    credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
+                    expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS skill_versions (
                     skill_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL,
                     parent_version INTEGER, rollback_version INTEGER, promoted_at TEXT,
                     PRIMARY KEY(skill_id, version)
                 );
             """)
+            approval_columns = {row[1] for row in db.execute("PRAGMA table_info(approvals)")}
+            for column in ("approval_subject", "approval_roles", "request_id", "credential_id"):
+                if column not in approval_columns:
+                    db.execute(f"ALTER TABLE approvals ADD COLUMN {column} TEXT")
             self._seed_runbooks(db)
+
+    def consume_api_approval_credential(
+        self, credential_id: str, identity_subject: str, expires_at: int
+    ) -> None:
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            with self.connection() as db:
+                db.execute("DELETE FROM api_approval_credentials WHERE expires_at < ?", (now - 60,))
+                db.execute(
+                    "INSERT INTO api_approval_credentials(credential_id, identity_subject, "
+                    "expires_at, consumed_at) VALUES(?,?,?,?)",
+                    (credential_id, identity_subject, expires_at,
+                     datetime.now(timezone.utc).isoformat()),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("approval credential has already been used") from exc
 
     def consume_verification_policy_peer_credential(
         self, credential_id: str, identity_subject: str, expires_at: int
@@ -215,9 +240,8 @@ class IncidentStore:
     def _lock_save_key(self, db, key: str) -> None:
         """Serialize a logical write key when the backend supports shared writers."""
 
-    def save(
-        self, state: IncidentState, alert_key: str | None = None, approved: bool | None = None
-    ) -> IncidentState:
+    def save(self, state: IncidentState, alert_key: str | None = None,
+             approved: bool | None = None, approval_identity: dict | None = None) -> IncidentState:
         now = datetime.now(timezone.utc).isoformat()
         with self.connection() as db:
             if alert_key is not None:
@@ -272,8 +296,14 @@ class IncidentStore:
                 ) for i, item in enumerate(policy_records)],
             )
             if approved is not None:
-                db.execute("INSERT INTO approvals(incident_id, approved, requested_execution, created_at) VALUES(?,?,?,?)",
-                           (state.incident_id, int(approved), int(state.execution_requested), now))
+                identity = approval_identity or {}
+                db.execute(
+                    "INSERT INTO approvals(incident_id, approved, requested_execution, created_at, "
+                    "approval_subject, approval_roles, request_id, credential_id) VALUES(?,?,?,?,?,?,?,?)",
+                    (state.incident_id, int(approved), int(state.execution_requested), now,
+                     identity.get("subject"), json.dumps(identity.get("roles")),
+                     identity.get("request_id"), identity.get("credential_id")),
+                )
             if state.execution_result is not None:
                 commands = [item.command for item in state.recommendations if item.command]
                 command = "; ".join(commands) if commands else None
@@ -482,7 +512,8 @@ class PostgresIncidentStore(IncidentStore):
                 requires_approval INTEGER NOT NULL, UNIQUE(incident_id, position))""",
             """CREATE TABLE IF NOT EXISTS approvals (
                 id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, approved INTEGER NOT NULL,
-                requested_execution INTEGER NOT NULL, created_at TEXT NOT NULL)""",
+                requested_execution INTEGER NOT NULL, created_at TEXT NOT NULL,
+                approval_subject TEXT, approval_roles TEXT, request_id TEXT, credential_id TEXT)""",
             """CREATE TABLE IF NOT EXISTS executions (
                 id BIGSERIAL PRIMARY KEY, incident_id TEXT NOT NULL, command TEXT,
                 result TEXT, created_at TEXT NOT NULL)""",
@@ -505,6 +536,9 @@ class PostgresIncidentStore(IncidentStore):
             """CREATE TABLE IF NOT EXISTS verification_policy_peer_credentials (
                 credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
                 expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS api_approval_credentials (
+                credential_id TEXT PRIMARY KEY, identity_subject TEXT NOT NULL,
+                expires_at INTEGER NOT NULL, consumed_at TEXT NOT NULL)""",
             """CREATE TABLE IF NOT EXISTS skill_versions (
                 skill_id TEXT NOT NULL, version INTEGER NOT NULL, payload JSONB NOT NULL,
                 parent_version INTEGER, rollback_version INTEGER, promoted_at TIMESTAMPTZ,
@@ -516,6 +550,8 @@ class PostgresIncidentStore(IncidentStore):
             db.execute("SELECT pg_advisory_xact_lock(675091744)")
             for statement in statements:
                 db.execute(statement)
+            for column in ("approval_subject", "approval_roles", "request_id", "credential_id"):
+                db.execute(f"ALTER TABLE approvals ADD COLUMN IF NOT EXISTS {column} TEXT")
             self._seed_runbooks(db)
 
     def _lock_save_key(self, db, key: str) -> None:
@@ -596,3 +632,21 @@ class PostgresIncidentStore(IncidentStore):
                 )
         except psycopg.errors.UniqueViolation as exc:
             raise ValueError("peer credential has already been used") from exc
+
+    def consume_api_approval_credential(
+        self, credential_id: str, identity_subject: str, expires_at: int
+    ) -> None:
+        import psycopg
+
+        now = int(datetime.now(timezone.utc).timestamp())
+        try:
+            with self.connection() as db:
+                db.execute("DELETE FROM api_approval_credentials WHERE expires_at < ?", (now - 60,))
+                db.execute(
+                    "INSERT INTO api_approval_credentials(credential_id, identity_subject, "
+                    "expires_at, consumed_at) VALUES(?,?,?,?)",
+                    (credential_id, identity_subject, expires_at,
+                     datetime.now(timezone.utc).isoformat()),
+                )
+        except psycopg.errors.UniqueViolation as exc:
+            raise ValueError("approval credential has already been used") from exc

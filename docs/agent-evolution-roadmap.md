@@ -273,3 +273,27 @@ effects.
 
 This is a bounded same-host concurrency and recovery observation, not production capacity,
 cross-host HA, an SLA, RPO/RTO or zero-data-loss proof. The real Stage 12 batch remains pending.
+
+## Post-Stage 12 local hardening: Control API access control
+
+Status: completed on 2026-09-17. See
+[`docs/evaluations/control-api-access-r1-report.md`](evaluations/control-api-access-r1-report.md).
+
+The Control API now has an additive RS256 access layer with `viewer`, `analyst`, `approver`,
+`admin` and machine-only `alertmanager` roles. `/health` and the existing public read-only
+verification-policy status remain compatible. Incident reads, analysis, fault injection,
+Repair Lab and Skill mutation use explicit permissions without changing request/response models,
+`IncidentState`, `IncidentWorkflow.run()` or `OpsTools`.
+
+An execution approval is valid only when the request carries a verified approver identity.
+The credential `jti` is consumed atomically before workflow execution; replay fails closed.
+Approval rows retain subject, roles, timestamp, request ID and credential ID. The Dashboard signs
+short-lived per-request credentials in its server process, so its private key is never shipped to
+the browser. Alertmanager receives a distinct bootstrap-generated machine credential that cannot
+read incidents or obtain approval/execution authority.
+
+The application-level feature remains compatibility-disabled unless configured; the Compose stack
+enables the local reference issuer. This is a local authorization seam and test fixture, not a
+production IAM, SSO, zero-trust or compliance result. A production deployment still needs an
+external IdP/issuer, user sessions, managed key rotation/revocation and independent security review.
+Stage 12 remains pending and unchanged.

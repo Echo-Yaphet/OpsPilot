@@ -341,6 +341,12 @@ class Settings(BaseSettings):
     skill_cases_file: str = str(Path(__file__).with_name("skill_cases.json"))
     skill_workspace_root: str = "/data/skill-workspaces"
     skill_promotion_token: str = "opspilot-local-skill-promotion"
+    api_access_auth_enabled: bool = False
+    api_access_public_key_file: str = "/identity/access-public/public.pem"
+    api_access_key_id: str = "opspilot-api-access-v1"
+    api_access_issuer: str = "opspilot-local-access-issuer"
+    api_access_audience: str = "opspilot-control-api"
+    api_access_maximum_ttl_seconds: int = Field(default=2_764_800, ge=1, le=31_536_000)
     repair_mode: Literal["disabled", "agents_sdk"] = "disabled"
     repair_sandbox_url: str | None = None
     repair_sandbox_token: str = ""
@@ -375,6 +381,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_verification_policies(self):
+        if self.api_access_auth_enabled:
+            if not self.api_access_public_key_file.strip():
+                raise ValueError("API access public key file must not be empty")
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", self.api_access_key_id):
+                raise ValueError("API access key ID must be 1-64 safe characters")
+            if not self.api_access_issuer.strip() or not self.api_access_audience.strip():
+                raise ValueError("API access issuer and audience must not be empty")
         if self.investigation_mode == "agents_sdk" and not (self.llm_base_url and self.llm_model):
             raise ValueError("agents_sdk investigation requires an LLM URL and model")
         if self.memory_database_url and not self.memory_database_url.startswith(

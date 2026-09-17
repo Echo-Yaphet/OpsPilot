@@ -1,6 +1,6 @@
 # OpsPilot project handoff
 
-Last updated: 2026-09-17 (PostgreSQL fast failure and request isolation)
+Last updated: 2026-09-17 (Control API RS256 access control)
 
 ## Continue from here
 
@@ -23,8 +23,8 @@ network partition and physical-streaming PostgreSQL standby promotion rehearsal.
 peer/controller traffic from a local shared HMAC to the independent RS256 workload identity
 issuer with per-workload proof keys. Stage 12 now provides a strict, read-only, non-overwritable
 evidence contract for the real cross-host or managed-HA run; it cannot pass on a same-host plan.
-The local PostgreSQL fast-failure/request-isolation follow-on is complete. The next
-resume-driven node remains execution of the Stage 12 protocol on real external
+The local PostgreSQL fast-failure/request-isolation and Control API access-control follow-ons
+are complete. The next resume-driven node remains execution of the Stage 12 protocol on real external
 infrastructure before production-quality claims.
 Production Kubernetes rollout is optional, not the current resume-project priority.
 
@@ -73,6 +73,16 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 ### Control backend
 
 - FastAPI control plane on port 8080.
+- Configurable RS256 API access verification separates `viewer`, `analyst`, `approver`, `admin`
+  and machine-only `alertmanager` roles. Application defaults remain compatibility-safe while the
+  Compose stack enables the local reference boundary.
+- `/health` and the existing read-only verification-policy status remain public. Incident/system
+  reads, analysis, Repair Lab, fault injection and Skill mutations require explicit permissions.
+- `approved=true` is insufficient in authenticated mode: execution requires a verified approver,
+  atomically consumes the credential `jti`, and audits subject, roles, time, request ID and
+  credential ID. Replay fails before workflow execution.
+- Dashboard calls use a server-side short-lived credential proxy; its access private key is not
+  shipped to the browser. Alertmanager has a distinct webhook-only machine identity.
 - Shared `IncidentState`, evidence, recommendation, risk, and Agent event models.
 - Agent roles represented: Coordinator, Monitor, Log, RCA, Solution, Safety, Executor, and Verification.
 - Stable workflow seam: `IncidentWorkflow.run()`, backed by a real LangGraph `StateGraph`.
@@ -169,6 +179,24 @@ The earlier generated Documents/Codex directory was moved and no longer exists.
 - `CPU spike`: bounded 15-second Dashboard action and 30-second script action with real container CPU metrics, Prometheus firing/resolution, deterministic RCA, and Alertmanager recommendation-only handling.
 
 ## Verified
+
+Latest implementation verification for Control API identity and authorization:
+
+- The local RS256 verifier rejects missing identity, wrong audience, expired/tampered credentials,
+  invalid roles and insufficient permissions. The role matrix separates read, analysis, approval,
+  administrative mutation and Alertmanager webhook authority without changing HTTP bodies,
+  `IncidentState`, `IncidentWorkflow.run()` or `OpsTools`.
+- Deployment batch `control-api-access-r1-20260917` passed 15/15 checks, including viewer/analyst/
+  approver/Alertmanager denials, approval audit binding and HTTP 401 on approval-token replay.
+  Its recommendation-only probe created zero execution and Verification rows.
+- Focused tests passed 32 cases and the complete backend suite passed 204 tests. Both Control API
+  images, identity bootstrap and Dashboard built; Dashboard render/security tests passed.
+- Alertmanager configuration passed and its machine identity returned 200 for webhook but 403 for
+  incident reads. Live Redis retained `recommendation_ready` -> `awaiting_approval` ->
+  `resolved / verified=true` ordering, with execution only after verified approval.
+- Compose, smoke, Tempo, runtime-log mTLS/Loki and all nine Prometheus rules passed. This is local
+  access-control evidence, not production IAM, SSO, zero-trust or compliance certification. Full
+  details are in `docs/evaluations/control-api-access-r1-report.md`; Stage 12 remains pending.
 
 Latest implementation verification for PostgreSQL fast failure and request isolation:
 
@@ -658,6 +686,7 @@ Local entry points:
 - `apps/container-metrics-exporter/app.py`: socketless CPU exporter backed by the runtime executor's trimmed read-only stats route.
 - `apps/promtail/tls_syslog_gateway.py`: client-certificate-enforcing TCP 1514 gateway and loopback-only Promtail relay.
 - `apps/control-api/opspilot/main.py`: HTTP routes, system status, CORS, and fault injection.
+- `apps/control-api/opspilot/access_control.py`: RS256 access verification, roles and permissions.
 - `apps/control-api/opspilot/storage.py`: compatible SQLite/PostgreSQL stores, normalized audit records, incident snapshots, revision history, durable peer credential consumption, and transactional legacy import.
 - `apps/control-api/opspilot/investigation.py`: resumable investigation lifecycle, aggregate budgets, deterministic context compaction and read-only event-memory integration.
 - `apps/control-api/opspilot/skill_promotion.py` and `skill_cases.json`: typed candidate registry, isolated immutable workspaces, frozen regression/counterexample evaluation, parent/rollback lineage and explicit promotion.
@@ -667,6 +696,7 @@ Local entry points:
 - `apps/control-api/opspilot/external_fault_domain_evaluation.py`: fail-closed external topology/evidence validation and immutable Stage 12 reporting.
 - `apps/policy-distributor/app.py`: authenticated read-only bundle endpoint used by the optional rollout profile.
 - `apps/dashboard/app/page.tsx`: Dashboard behavior and UI.
+- `apps/dashboard/app/api/control/[...path]/route.ts`: server-only local access credential proxy.
 - `apps/dashboard/app/globals.css`: Dashboard visual system.
 - `apps/shared-service/app.py`: shared sample-application implementation.
 - `infra/prometheus/alerts.yml`: alert rules.
@@ -684,6 +714,7 @@ Local entry points:
 - `infra/otel-collector/` and `infra/tempo/`: OTLP Trace collection, forwarding, local retention and query configuration.
 - `scripts/validate-runtime-identity.py` and `scripts/validate-orchestrator-runtime.py`: repeatable default and cross-broker identity/replay acceptance.
 - `scripts/evaluate-external-fault-domain-evidence.py`: validates a real-host Stage 12 plan/observation pair without gaining infrastructure mutation authority.
+- `scripts/validate-control-api-access.py`: repeatable live role, token, audit and replay acceptance.
 - `tests/test_workflow.py`: approval, policy allow/deny, Redis-path, graph inspection, inconclusive RCA, verification failure, and stale-log precedence tests.
 
 ## Current limitations
@@ -697,8 +728,12 @@ Local entry points:
 - Promtail mounts neither the Docker socket nor the host container-log directory. All three business services use runtime mTLS RFC5424 forwarding with label-preserving Promtail metrics; the default stack has no file discovery, shared target files, or persisted positions. Vault Agent is the first concrete external delivery controller, while the strict downstream contract remains provider-neutral for a future cloud Secret CSI adapter. Vault Agent must run on the Docker host because its successful-render hook invokes the host Docker CLI; production still needs normal host service hardening and a non-dev Vault cluster. The fallback local CA remains development-only. Per-service freshness proves Promtail received each source, while the separate sent-entry signal remains stack-wide because Promtail does not label sent counters by service.
 - The local Compose Control API now uses PostgreSQL/pgvector, while runtime brokers retain their separate SQLite default and optional shared audit PostgreSQL. The Kubernetes runtime plane supports independently scheduled workload placements, but no Kubernetes context was configured on this host. Production still needs registry image publication, external Secret provisioning, an HA managed PostgreSQL endpoint, and cluster-level rollout/failure-domain acceptance. Kubernetes containers share a Pod network; the actuator therefore has no TCP listener or ServiceAccount and is protected by Pod NetworkPolicy, but is not a separate network namespace as in Compose. CPU usage remains process-based rather than cgroup-v2 based.
 - Alert resolution records signal recovery as `alert_resolved`; it does not claim that an approved remediation or deep service-level verification occurred.
-- General authentication and multi-user authorization are not implemented. Skill candidate/promotion mutations have a dedicated Bearer identity, but the local default token must be replaced and managed externally for production.
-- The Dashboard is intentionally local and has not been publicly deployed because it controls the local Docker environment.
+- General RS256 authentication and role authorization are implemented, but the local Dashboard
+  represents one administrative subject rather than real user login/session lifecycle. Production
+  still needs an external IdP/issuer, managed key custody/rotation/revocation, TLS termination and
+  independent review; the result is not IAM, SSO, zero-trust or compliance certification.
+- The Dashboard is intentionally local and has not been publicly deployed because it controls the
+  local Docker environment. Its access private key stays in the server container, not the browser.
 - `work/dashboard-init-backup` contains recoverable initializer remnants and is excluded from Docker build context; it is not part of the product.
 
 ## Recommended roadmap
@@ -906,6 +941,9 @@ Local entry points:
 - Consider a persisted embedding cache or vector index only when corpus size requires it.
 - Completed bounded same-host active-active load validation, PostgreSQL fast-failure/request-isolation at concurrency eight, and a local database-network partition plus physical-streaming standby promotion rehearsal; production-quality claims still require real independent failure domains and managed HA PostgreSQL acceptance.
 - Completed the external explicit-approval canary-first rollout/quorum controller, same-volume process interruption recovery and peer/controller RS256 workload identity integration. The fail-closed Stage 12 evidence contract is implemented; next supply a real multi-domain topology and run node-loss/database-failover/issuer-loss acceptance.
+- Completed Control API RS256 access verification, role authorization, approval-subject audit and
+  replay protection. A future production deployment should replace the local Dashboard/bootstrap
+  issuer with an external IdP and managed key/session lifecycle without changing the API contract.
 - If another target platform requires it, add a cloud Secret CSI adapter behind the same strict bundle seam; Vault Agent is now the validated concrete controller.
 - Apply the rendered runtime plane to a real multi-node Kubernetes cluster, replace the acceptance PostgreSQL StatefulSet with managed HA PostgreSQL, publish immutable images/Secrets through the deployment system, and validate node loss plus placement rescheduling without replay/audit gaps.
 
@@ -913,4 +951,4 @@ Local entry points:
 
 Use this in a new conversation:
 
-> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md`, the Stage 6-11 reports, `docs/evaluations/postgres-fast-fail-r4-report.md` and `docs/evaluations/stage12-external-fault-domain-protocol.md`, then refresh local Git and runtime status without assuming historical counts. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification. Stage 7 validates a two-node shared-store active-active profile. Stage 8 adds an external one-shot policy rollout controller with a pre-signed candidate, explicit approval, canary exact-acceptance gate, atomic stable publication, configured quorum and fsync audit. Stage 9 binds those phases to a rollout plan digest and resumes safely after controller process interruption. Stage 10 formal batch `stage10-fault-domain-r5-20260916` proves same-host database-network fail-closed/survivor behavior without delayed commit, node rejoin, physical-streaming standby catch-up and manual endpoint failover with both existing nodes resuming writes. Stage 11 formal batch `stage11-policy-identity-r2-20260916` replaces peer/controller shared HMAC with per-workload proof keys and externally issued request-bound RS256 credentials, reaching 2/2 convergence while rejecting missing, retired-HMAC, replayed, unknown-target and wrong-target identities. The follow-on batch `postgres-fast-fail-r4-20260917` adds bounded PostgreSQL connection/acquisition/query deadlines and async request isolation: 8/8 isolated writes failed with HTTP 502 within 0.094 seconds, `/health` stayed 200 in 0.006 seconds, recovery remained 8/8 HTTP 404 after 16 seconds, and both existing nodes resumed after standby promotion. Stage 12 still has only a strict evaluator that rejects same-host topology and requires content-addressed external provider/control/identity/database evidence; no real external batch exists. Next provide independent hosts or availability zones, managed or independently operated HA PostgreSQL and redundant issuer instances, then run the protocol. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, monotonic Verification revisions, and protected IDE/system files. Do not present the future batch as an SLA, zero-data-loss, RPO or RTO result. Kubernetes production rollout remains optional and is not the current resume-project priority.
+> Continue OpsPilot from `/Users/yaphet/code/OpsPilot`. Read `AGENTS.md`, `PROJECT_STATUS.md`, `README.md`, `docs/agent-evolution-roadmap.md`, the Stage 6-11 reports, `docs/evaluations/postgres-fast-fail-r4-report.md`, `docs/evaluations/control-api-access-r1-report.md` and `docs/evaluations/stage12-external-fault-domain-protocol.md`, then refresh local Git and runtime status without assuming historical counts. Stages 1-5 implement optional Agents SDK investigation, the approval-gated repair lab, resumable PostgreSQL checkpoints with aggregate budgets and deterministic compaction, filtered pgvector event memory, Tempo Trace, authenticated Skill promotion, and label-isolated paired held-out evaluation. Stage 6 adds deterministic Redis+MySQL multi-target planning, whole-plan fail-closed policy review, ordered execution and joint Verification. Stage 7 validates a two-node shared-store active-active profile. Stage 8 adds an external one-shot policy rollout controller with a pre-signed candidate, explicit approval, canary exact-acceptance gate, atomic stable publication, configured quorum and fsync audit. Stage 9 binds those phases to a rollout plan digest and resumes safely after controller process interruption. Stage 10 formal batch `stage10-fault-domain-r5-20260916` proves same-host database-network fail-closed/survivor behavior without delayed commit, node rejoin, physical-streaming standby catch-up and manual endpoint failover with both existing nodes resuming writes. Stage 11 formal batch `stage11-policy-identity-r2-20260916` replaces peer/controller shared HMAC with per-workload proof keys and externally issued request-bound RS256 credentials. Follow-on hardening adds bounded PostgreSQL failure latency plus Control API RS256 `viewer`/`analyst`/`approver`/`admin`/`alertmanager` authorization, verified approval-subject audit and approval credential replay rejection; the local Dashboard reference identity is not production IAM or SSO. Stage 12 still has only a strict evaluator that rejects same-host topology and requires content-addressed external provider/control/identity/database evidence; no real external batch exists. Next provide independent hosts or availability zones, managed or independently operated HA PostgreSQL and redundant issuer instances, then run the protocol. Preserve HTTP APIs, `IncidentState`, `IncidentWorkflow.run(request) -> IncidentState`, `OpsTools`, Dashboard evidence, Alertmanager recommendation-only behavior, independent policy/approval gates, socketless target actuators, monotonic Verification revisions, and protected IDE/system files. Do not present the future batch as an SLA, zero-data-loss, RPO or RTO result. Kubernetes production rollout remains optional and is not the current resume-project priority.

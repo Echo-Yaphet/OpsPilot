@@ -27,6 +27,9 @@ services:
       - workload-metrics-public:/identity/metrics-public
       - workload-policy-controller-private:/identity/policy-controller-private
       - workload-policy-controller-public:/identity/policy-controller-public
+      - api-access-private:/identity/access-private
+      - api-access-public:/identity/access-public
+      - api-access-alertmanager:/identity/access-alertmanager
 
   workload-identity-issuer:
     <<: *service-common
@@ -55,7 +58,10 @@ services:
       context: .
       dockerfile: apps/dashboard/Dockerfile
     environment:
-      NEXT_PUBLIC_OPSPILOT_API: http://localhost:8080
+      OPSPILOT_CONTROL_API_INTERNAL: http://control-api:8080
+      OPSPILOT_ACCESS_PRIVATE_KEY_FILE: /identity/access-private/private.pem
+    volumes:
+      - api-access-private:/identity/access-private:ro
     ports: ["3001:3001"]
     depends_on: [control-api]
 
@@ -199,6 +205,11 @@ services:
       SKILL_CASES_FILE: /app/opspilot/skill_cases.json
       SKILL_WORKSPACE_ROOT: /data/skill-workspaces
       SKILL_PROMOTION_TOKEN: ${SKILL_PROMOTION_TOKEN:-opspilot-local-skill-promotion}
+      API_ACCESS_AUTH_ENABLED: ${API_ACCESS_AUTH_ENABLED:-true}
+      API_ACCESS_PUBLIC_KEY_FILE: /identity/access-public/public.pem
+      API_ACCESS_KEY_ID: opspilot-api-access-v1
+      API_ACCESS_ISSUER: opspilot-local-access-issuer
+      API_ACCESS_AUDIENCE: opspilot-control-api
       REPAIR_SANDBOX_URL: ${REPAIR_SANDBOX_URL:-}
       REPAIR_SANDBOX_TOKEN: ${REPAIR_SANDBOX_TOKEN:-}
       REPAIR_APPROVAL_KEY: ${REPAIR_APPROVAL_KEY:-}
@@ -232,6 +243,7 @@ services:
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
       - workload-issuer-public:/identity/issuer-public:ro
+      - api-access-public:/identity/access-public:ro
     depends_on:
       prometheus: {condition: service_started}
       loki: {condition: service_started}
@@ -318,6 +330,11 @@ services:
       SKILL_CASES_FILE: /app/opspilot/skill_cases.json
       SKILL_WORKSPACE_ROOT: /data/skill-workspaces
       SKILL_PROMOTION_TOKEN: ${SKILL_PROMOTION_TOKEN:-opspilot-local-skill-promotion}
+      API_ACCESS_AUTH_ENABLED: ${API_ACCESS_AUTH_ENABLED:-true}
+      API_ACCESS_PUBLIC_KEY_FILE: /identity/access-public/public.pem
+      API_ACCESS_KEY_ID: opspilot-api-access-v1
+      API_ACCESS_ISSUER: opspilot-local-access-issuer
+      API_ACCESS_AUDIENCE: opspilot-control-api
       VERIFICATION_MAX_ATTEMPTS: ${VERIFICATION_MAX_ATTEMPTS:-6}
       VERIFICATION_CHECK_INTERVAL_SECONDS: ${VERIFICATION_CHECK_INTERVAL_SECONDS:-2}
       VERIFICATION_SERVICE_HEALTH_CONDITION: ${VERIFICATION_SERVICE_HEALTH_CONDITION:-healthy}
@@ -343,6 +360,7 @@ services:
       - ./infra/opspilot:/etc/opspilot:ro
       - workload-control-private:/identity/control-private:ro
       - workload-issuer-public:/identity/issuer-public:ro
+      - api-access-public:/identity/access-public:ro
     depends_on:
       prometheus: {condition: service_started}
       loki: {condition: service_started}
@@ -754,6 +772,9 @@ services:
     volumes:
       - ./infra/alertmanager:/etc/alertmanager:ro
       - alertmanager-data:/alertmanager
+      - api-access-alertmanager:/etc/alertmanager-access:ro
+    depends_on:
+      workload-identity-bootstrap: {condition: service_completed_successfully}
 
   grafana:
     <<: *service-common
@@ -808,6 +829,9 @@ volumes:
   grafana-data: {}
   loki-data: {}
   alertmanager-data: {}
+  api-access-private: {}
+  api-access-public: {}
+  api-access-alertmanager: {}
   control-data: {}
   control-canary-data: {}
   executor-data: {}

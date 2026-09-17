@@ -1,4 +1,4 @@
-.PHONY: up down ps logs test smoke evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate external-fault-domain-evaluate verification-policy-rollout-validate verification-policy-controller-resume-validate verification-policy-workload-identity-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
+.PHONY: up down ps logs test smoke control-api-access-validate evaluate-stage5 evaluate-stage6 control-api-active-active-validate control-api-fault-domain-validate external-fault-domain-evaluate verification-policy-rollout-validate verification-policy-controller-resume-validate verification-policy-workload-identity-validate repair-lab-validate repair-agent-live runtime-identity-validate runtime-orchestrator-validate runtime-log-pki runtime-log-rotate runtime-log-vault-publish runtime-log-vault-apply dashboard-dev dashboard-build fault-redis fault-cpu fault-mysql fault-combined recover
 
 up: runtime-log-pki
 	docker compose up -d --build
@@ -25,10 +25,16 @@ logs:
 	docker compose logs -f --tail=100
 
 test:
-	docker compose run --rm -v ./scripts:/app/scripts:ro -v ./apps/shared-service:/app/shared-service:ro control-api python -m pytest -q
+	docker compose run --rm -e API_ACCESS_AUTH_ENABLED=false -v ./scripts:/app/scripts:ro -v ./apps/shared-service:/app/shared-service:ro control-api python -m pytest -q
 
 smoke:
 	./scripts/smoke-test.sh
+
+control-api-access-validate:
+	docker compose run --rm --no-deps \
+		-v ./scripts:/app/scripts:ro \
+		-v $${COMPOSE_PROJECT_NAME:-opspilot}_api-access-private:/identity/access-private:ro \
+		control-api python /app/scripts/validate-control-api-access.py
 
 evaluate-stage5:
 	mkdir -p work/stage5-evaluations

@@ -3,7 +3,7 @@ import hmac
 import hashlib
 import json
 from datetime import datetime, timezone
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -11,6 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from workload_identity import IdentityError
 
 from .config import VerificationPolicyProvider, settings
+from .access_control import (
+    AccessIdentityError,
+    AccessPrincipal,
+    ApiAccessAuthenticator,
+    approval_audit,
+)
 from .execution import GatewayExecutor
 from .knowledge import OpenAICompatibleEmbeddingProvider, SemanticKnowledgeRetriever
 from .llm import OllamaIncidentAnalyzer
@@ -61,6 +67,41 @@ store = (PostgresIncidentStore(
 skill_promotion = SkillPromotionService(
     store, settings.skill_cases_file, settings.skill_workspace_root,
 )
+api_access_authenticator = ApiAccessAuthenticator(
+    enabled=settings.api_access_auth_enabled,
+    public_key_file=settings.api_access_public_key_file,
+    key_id=settings.api_access_key_id,
+    issuer=settings.api_access_issuer,
+    audience=settings.api_access_audience,
+    maximum_ttl_seconds=settings.api_access_maximum_ttl_seconds,
+)
+
+
+def _authorize_access(authorization: str | None, permission: str) -> AccessPrincipal:
+    try:
+        principal = api_access_authenticator.authenticate(authorization)
+    except AccessIdentityError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if permission not in principal.permissions:
+        raise HTTPException(
+            status_code=403, detail=f"access identity lacks {permission} permission"
+        )
+    return principal
+
+
+async def _consume_approval(principal: AccessPrincipal) -> None:
+    if not api_access_authenticator.enabled:
+        return
+    try:
+        await run_database_call(
+            store.consume_api_approval_credential,
+            principal.credential_id,
+            principal.subject,
+            principal.expires_at,
+            timeout_seconds=settings.database_request_timeout_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def _authorize_skill_mutation(authorization: str | None) -> None:
@@ -197,8 +238,9 @@ async def health():
 
 
 @app.get("/api/v1/system/memory/status")
-async def memory_status():
+async def memory_status(authorization: str | None = Header(default=None)):
     """Read-only visibility for the optional event-memory backend."""
+    _authorize_access(authorization, "read")
     if event_memory is None:
         return {"backend": "disabled", "healthy": True, "active_events": 0}
     return await run_database_call(
@@ -207,18 +249,21 @@ async def memory_status():
 
 
 @app.get("/api/v1/skills/cases")
-async def list_skill_cases():
+async def list_skill_cases(authorization: str | None = Header(default=None)):
     """Return the immutable, server-owned evaluation cases and their digest."""
+    _authorize_access(authorization, "read")
     return skill_promotion.list_cases()
 
 
 @app.get("/api/v1/skills/{skill_id}/versions")
-async def list_skill_versions(skill_id: str):
+async def list_skill_versions(skill_id: str, authorization: str | None = Header(default=None)):
+    _authorize_access(authorization, "read")
     return skill_promotion.list_versions(skill_id)
 
 
 @app.get("/api/v1/skills/{skill_id}/active")
-async def get_active_skill(skill_id: str):
+async def get_active_skill(skill_id: str, authorization: str | None = Header(default=None)):
+    _authorize_access(authorization, "read")
     try:
         return skill_promotion.active(skill_id)
     except SkillPromotionError as exc:
@@ -230,7 +275,10 @@ async def create_skill_candidate(
     request: SkillCandidateRequest, authorization: str | None = Header(default=None),
 ):
     """Freeze, isolate and evaluate a candidate; this never promotes it."""
-    _authorize_skill_mutation(authorization)
+    if api_access_authenticator.enabled:
+        _authorize_access(authorization, "admin")
+    else:
+        _authorize_skill_mutation(authorization)
     try:
         return skill_promotion.create_candidate(request)
     except SkillPromotionError as exc:
@@ -242,7 +290,13 @@ async def promote_skill(
     request: SkillPromotionRequest, authorization: str | None = Header(default=None),
 ):
     """Promote only a passing, current-parent candidate with explicit approval."""
-    _authorize_skill_mutation(authorization)
+    principal = None
+    if api_access_authenticator.enabled:
+        principal = _authorize_access(authorization, "admin")
+        if request.approved:
+            await _consume_approval(principal)
+    else:
+        _authorize_skill_mutation(authorization)
     try:
         return skill_promotion.promote(request)
     except SkillPromotionError as exc:
@@ -276,13 +330,25 @@ async def verification_policy_rollout():
 
 
 @app.post("/api/v1/incidents/analyze", response_model=IncidentState)
-async def analyze(request: AnalyzeRequest):
+async def analyze(
+    request: AnalyzeRequest,
+    authorization: str | None = Header(default=None),
+    x_request_id: str | None = Header(default=None),
+):
+    principal = _authorize_access(authorization, "analyze")
+    audit = None
+    if request.execute and request.approved:
+        if "approve" not in principal.permissions:
+            raise HTTPException(status_code=403, detail="verified approver identity is required")
+        await _consume_approval(principal)
+        audit = approval_audit(principal, x_request_id or str(uuid4()))
     try:
         state = await workflow.run(request)
         state = await run_database_call(
             store.save,
             state,
             approved=request.approved if request.execute else None,
+            approval_identity=audit,
             timeout_seconds=settings.database_request_timeout_seconds,
         )
         return state
@@ -291,8 +357,11 @@ async def analyze(request: AnalyzeRequest):
 
 
 @app.post("/api/v1/repair-lab/proposals")
-async def propose_repair(request: RepairRequest):
+async def propose_repair(
+    request: RepairRequest, authorization: str | None = Header(default=None)
+):
     """Create a prevalidated lab-only package; never applies it."""
+    _authorize_access(authorization, "repair_propose")
     if repair_agent is None:
         raise HTTPException(status_code=503, detail="repair lab is disabled")
     try:
@@ -302,8 +371,13 @@ async def propose_repair(request: RepairRequest):
 
 
 @app.post("/api/v1/repair-lab/approvals")
-async def approve_repair(request: RepairApprovalRequest):
+async def approve_repair(
+    request: RepairApprovalRequest, authorization: str | None = Header(default=None)
+):
     """Apply exactly one persisted package after explicit human approval."""
+    principal = _authorize_access(authorization, "repair_approve")
+    if request.approved:
+        await _consume_approval(principal)
     if repair_agent is None:
         raise HTTPException(status_code=503, detail="repair lab is disabled")
     try:
@@ -313,7 +387,11 @@ async def approve_repair(request: RepairApprovalRequest):
 
 
 @app.get("/api/v1/incidents", response_model=list[IncidentState])
-async def list_incidents(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+async def list_incidents(
+    limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
+    authorization: str | None = Header(default=None),
+):
+    _authorize_access(authorization, "read")
     return await run_database_call(
         store.list,
         limit=limit,
@@ -323,7 +401,8 @@ async def list_incidents(limit: int = Query(50, ge=1, le=200), offset: int = Que
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentState)
-async def get_incident(incident_id: str):
+async def get_incident(incident_id: str, authorization: str | None = Header(default=None)):
+    _authorize_access(authorization, "read")
     incident = await run_database_call(
         store.get, incident_id, timeout_seconds=settings.database_request_timeout_seconds
     )
@@ -354,7 +433,10 @@ def alert_started_at(alert: dict) -> datetime:
 
 
 @app.post("/api/v1/alertmanager/webhook")
-async def alertmanager_webhook(payload: dict):
+async def alertmanager_webhook(
+    payload: dict, authorization: str | None = Header(default=None)
+):
+    _authorize_access(authorization, "alert_webhook")
     processed: list[IncidentState] = []
     for alert in payload.get("alerts", []):
         labels = alert.get("labels", {})
@@ -409,7 +491,8 @@ async def alertmanager_webhook(payload: dict):
 
 
 @app.get("/api/v1/system/status")
-async def system_status():
+async def system_status(authorization: str | None = Header(default=None)):
+    _authorize_access(authorization, "read")
     services = {
         "user-service": "http://user-service:8001/health",
         "order-service": "http://order-service:8002/health",
@@ -438,9 +521,13 @@ async def system_status():
 
 
 @app.post("/api/v1/faults/{fault}")
-async def inject_fault(fault: str, request: FaultRequest):
+async def inject_fault(
+    fault: str, request: FaultRequest, authorization: str | None = Header(default=None)
+):
+    principal = _authorize_access(authorization, "admin")
     if not request.approved:
         raise HTTPException(status_code=403, detail="Explicit approval is required")
+    await _consume_approval(principal)
     targets = {"redis-down": "redis", "mysql-down": "mysql"}
     if fault in targets:
         target = targets[fault]

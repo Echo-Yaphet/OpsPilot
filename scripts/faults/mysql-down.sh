@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 set -eu
-curl -fsS -X POST http://localhost:8080/api/v1/faults/mysql-down \
+curl -fsS -X POST http://localhost:3001/api/control/api/v1/faults/mysql-down \
   -H 'content-type: application/json' -d '{"approved":true}'
 echo
 echo "MySQL stopped by its OS-isolated actuator. Generate health traffic, wait about 15 seconds, then analyze."

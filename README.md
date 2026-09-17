@@ -4,7 +4,7 @@ OpsPilot 是一个面向智能运维闭环的多 Agent MVP。第一阶段使用�
 
 `故障注入 → Prometheus/Loki 取证 → RCA → 方案生成 → 安全审查 → 人工审批 → 执行 → 验证`
 
-当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险，仍必须同时传入 `execute=true` 和 `approved=true`。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。默认栈已完全移除 Docker socket：Control API 以短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再调用独立身份 broker；broker 只经每目标私有 Unix socket 请求无网络、只具 `CAP_KILL` 的 actuator。每个目标加入对应 actuator 拥有的 PID namespace，因此内核把执行能力限制在单一目标进程。三个业务服务继续由 Docker logging driver 通过 mTLS RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度。
+当前默认只生成建议，不会自动执行修复。Alertmanager 会自动创建或更新事件，但容器重启被归类为中风险；启用 API 认证时，`execute=true` 和 `approved=true` 还必须绑定经过 RS256 验证、具备 `approver` 权限且未重放的人工身份。即使人工批准，执行策略也只允许精确的 `docker compose restart <已知服务>` 操作；其他命令或未知目标会被拒绝并记录明确原因。默认栈已完全移除 Docker socket：Control API 以短期、一次性、请求绑定的 workload credential 调用 Gateway，Gateway 再调用独立身份 broker；broker 只经每目标私有 Unix socket 请求无网络、只具 `CAP_KILL` 的 actuator。每个目标加入对应 actuator 拥有的 PID namespace，因此内核把执行能力限制在单一目标进程。三个业务服务继续由 Docker logging driver 通过 mTLS RFC5424 syslog 在运行时转发到 Promtail，并保持原 Loki 标签与按服务新鲜度。
 
 可选 `repair-lab` profile 另提供 OpenAI Agents SDK 驱动的配置修复实验：模型只能在固定故障副本中读取工作区、生成由白名单步骤组成的诊断脚本和 Redis 配置候选。独立 validator 先验证候选，人工批准再绑定 package/base/target/digest/有效期/一次性 `jti`；应用后的独立健康探针失败会自动回滚。该链路不接触默认业务服务或现有 runtime executor。
 
@@ -211,6 +211,30 @@ make external-fault-domain-evaluate \
 
 该入口是可重复的证据判定契约，不会伪造外部环境。当前仓库尚无真实外部批次，因此 Stage 12 仍未完成；所需字段和采集顺序见 [Stage 12 外部故障域协议](docs/evaluations/stage12-external-fault-domain-protocol.md)。即使正式批次通过，也只证明枚举故障，不自动形成 SLA、零数据丢失、RPO 或 RTO 声明。
 
+## Control API 身份认证与分权授权
+
+Control API 提供可配置的 RS256 访问认证。应用配置本身默认兼容旧调用；默认 Compose 栈显式启用本地认证，并使用以下角色矩阵：
+
+| 角色 | 权限 |
+| --- | --- |
+| `viewer` | 事件、系统、Skill 和状态只读 |
+| `analyst` | 只读、事件分析、Repair Lab 提案；不能批准执行 |
+| `approver` | 只读、分析、人工批准和 Repair Lab 批准 |
+| `admin` | 本地故障注入、Skill 候选/提升及全部人工操作 |
+| `alertmanager` | 仅 Alertmanager webhook；不能读取、批准或执行 |
+
+`/health` 与兼容的只读 verification-policy 状态接口保持轻量可用。其他受保护接口验证 issuer、audience、签名、有效期、主体、角色和 `jti`。批准执行会原子消费 `jti`，重放返回 401；审批审计记录主体、角色、时间、请求 ID 和 credential ID。`approved=true` 本身不再构成有效授权。
+
+Dashboard 通过同容器的服务端代理为每个请求签发短期凭证；访问私钥只挂载到 Dashboard 服务端，不进入浏览器 bundle、网络响应或日志。Alertmanager 使用 bootstrap 生成的独立机器凭证，仅有 webhook 权限。外部系统可用自己的 RS256 签发器替换本地签发端而不改变 HTTP 数据结构。当前实现是本地访问控制边界，不是生产 IAM、SSO、零信任或合规认证；生产环境还需要独立 IdP、用户会话、密钥托管/轮换和撤销机制。
+
+可重复验收：
+
+```bash
+make control-api-access-validate
+```
+
+完整结果见 [Control API 访问控制报告](docs/evaluations/control-api-access-r1-report.md)。
+
 ## Redis 宕机最小链路验收
 
 先启动系统并确认 `make smoke` 通过，然后：
@@ -218,7 +242,7 @@ make external-fault-domain-evaluate \
 ```bash
 make fault-redis
 sleep 15
-curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
+curl -sS -X POST http://localhost:3001/api/control/api/v1/incidents/analyze \
   -H 'content-type: application/json' \
   -d '{"service":"payment-service","symptom":"Redis unavailable"}'
 ```
@@ -235,7 +259,7 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
 批准执行并验证容器恢复：
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
+curl -sS -X POST http://localhost:3001/api/control/api/v1/incidents/analyze \
   -H 'content-type: application/json' \
   -d '{"service":"payment-service","symptom":"Redis unavailable","execute":true,"approved":true}'
 ```
@@ -244,7 +268,7 @@ curl -sS -X POST http://localhost:8080/api/v1/incidents/analyze \
 
 ## 外部 workload identity
 
-首次启动时，一次性 bootstrap job 在四个独立命名卷中生成签发器、Control API、Gateway 和 metrics exporter 的 RSA key pair。每个调用方只挂载自己的 proof private key；Gateway 与 runtime executor 只挂载签发器 public key；只有签发器挂载 JWT signing private key。签发器验证调用方对完整领取请求的签名、时间戳和一次性 nonce，并按 subject 独立限制 audience 与 operation，随后签发请求绑定的短期 RS256 credential。
+首次启动时，一次性 bootstrap job 分别生成 workload issuer/调用方 proof key，以及独立的 Control API access key。每个 workload 调用方只挂载自己的 proof private key；Gateway 与 runtime executor 只挂载签发器 public key；只有 workload issuer 挂载 workload JWT signing private key。Dashboard 服务端单独挂载 access private key，Control API 只挂载对应 public key。workload issuer 验证调用方对完整领取请求的签名、时间戳和一次性 nonce，并按 subject 独立限制 audience 与 operation，随后签发请求绑定的短期 RS256 credential。
 
 签发器无宿主端口且不挂载 Docker socket。Gateway 调 runtime executor 与 metrics exporter 读取 stats 均不发送静态 shared token。签发器、Gateway 和 runtime executor 的 nonce/`jti` 消费状态各自持久化；未知 workload/audience/operation、过期 proof、重复 nonce、错误签名、错误 issuer/audience/path/action/target 和重复 `jti` 都会在 actuator 访问前拒绝。生产轮换应先让验证方信任新的签发 public key，再切换签发器 signing key，最后在所有旧凭证最长 TTL 结束后移除旧信任；调用方 proof key 可按 workload 独立轮换。
 

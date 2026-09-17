@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-const API = process.env.NEXT_PUBLIC_OPSPILOT_API ?? "http://localhost:8080";
+const API = "/api/control";
 
 type HealthItem = { name: string; healthy: boolean; detail?: Record<string, unknown> };
 type SystemStatus = { healthy: boolean; services: HealthItem[]; infrastructure: HealthItem[] };

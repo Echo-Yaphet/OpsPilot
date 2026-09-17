@@ -25,7 +25,7 @@ subprocess.run(
     ["docker", "compose", "exec", "-T", "repair-sandbox", "python", "-c", reset_code],
     check=True,
 )
-proposal = post("http://localhost:8080/api/v1/repair-lab/proposals", {
+proposal = post("http://localhost:3001/api/control/api/v1/repair-lab/proposals", {
     "symptom": "payment repair replica is unhealthy because configured Redis DNS cannot resolve",
 }, 180)
 assert proposal["status"] == "awaiting_approval"
@@ -33,7 +33,7 @@ assert proposal["package"]["validation"]["passed"] is True
 assert [item["tool"] for item in proposal["trace"]] == [
     "read_workspace", "write_diagnostic_script", "run_diagnostic_script", "write_candidate",
 ]
-applied = post("http://localhost:8080/api/v1/repair-lab/approvals", {
+applied = post("http://localhost:3001/api/control/api/v1/repair-lab/approvals", {
     "package_id": proposal["package"]["package_id"], "approved": True,
 }, 30)
 assert applied["verified"] is True
