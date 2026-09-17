@@ -30,6 +30,11 @@ class FaultDomainObservation(BaseModel):
 
     baseline_cross_node_visible: bool
     partitioned_node_status: int
+    partitioned_node_failure_seconds: float = Field(ge=0)
+    partitioned_node_failure_target_seconds: float = Field(gt=0)
+    concurrent_partition_statuses: list[int] = Field(min_length=2)
+    isolated_health_status: int
+    isolated_health_seconds: float = Field(ge=0)
     partitioned_write_absent_after_heal: bool
     survivor_write_status: int
     recovered_node_status: int
@@ -60,6 +65,18 @@ def build_fault_domain_report(
     checks = {
         "baseline_cross_node_visibility": observation.baseline_cross_node_visible,
         "partitioned_node_failed_closed": observation.partitioned_node_status >= 500,
+        "partitioned_node_failed_within_target": (
+            observation.partitioned_node_failure_seconds
+            <= observation.partitioned_node_failure_target_seconds
+        ),
+        "concurrent_partition_requests_failed_closed": all(
+            status >= 500 for status in observation.concurrent_partition_statuses
+        ),
+        "isolated_node_health_remained_responsive": (
+            observation.isolated_health_status == 200
+            and observation.isolated_health_seconds
+            <= observation.partitioned_node_failure_target_seconds
+        ),
         "partitioned_write_not_committed_late": observation.partitioned_write_absent_after_heal,
         "surviving_node_remained_writable": observation.survivor_write_status == 200,
         "partitioned_node_rejoined": observation.recovered_node_status == 200,
@@ -130,6 +147,18 @@ def _markdown(report: FaultDomainReport) -> str:
         for name, passed in report.checks.items()
     )
     lines.extend([
+        "",
+        "## Observed failure timing",
+        "",
+        (
+            f"- Partitioned write failure: {report.observation.partitioned_node_failure_seconds:.3f}s "
+            f"(target: <= {report.observation.partitioned_node_failure_target_seconds:.3f}s)"
+        ),
+        f"- Isolated node `/health`: {report.observation.isolated_health_seconds:.3f}s",
+        (
+            "- Concurrent partitioned writes: "
+            f"{len(report.observation.concurrent_partition_statuses)}"
+        ),
         "",
         "## Safety boundary",
         "",

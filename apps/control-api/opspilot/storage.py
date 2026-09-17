@@ -1,14 +1,51 @@
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import hashlib
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .knowledge import IncidentMatch, RetrievalScore, RunbookMatch
 from .models import IncidentState
+
+
+class DatabaseBusyError(TimeoutError):
+    """Raised before a request can consume unbounded database wait capacity."""
+
+
+_database_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "opspilot_database_deadline", default=None
+)
+
+
+def database_deadline_expired() -> bool:
+    deadline = _database_deadline.get()
+    return deadline is not None and time.monotonic() >= deadline
+
+
+def database_acquire_timeout(configured_timeout: float) -> float:
+    deadline = _database_deadline.get()
+    if deadline is None:
+        return configured_timeout
+    return max(0.0, min(configured_timeout, deadline - time.monotonic()))
+
+
+async def run_database_call(function, *args, timeout_seconds: float, **kwargs):
+    """Bound a synchronous store call and propagate its deadline into the worker thread."""
+    deadline = time.monotonic() + timeout_seconds
+    token = _database_deadline.set(deadline)
+    try:
+        return await asyncio.wait_for(
+            asyncio.to_thread(function, *args, **kwargs), timeout=timeout_seconds
+        )
+    finally:
+        _database_deadline.reset(token)
 
 
 class IncidentStore:
@@ -363,9 +400,26 @@ class _PostgresAdapter:
 class PostgresIncidentStore(IncidentStore):
     """Shared PostgreSQL incident/audit store with atomic SQLite bootstrap migration."""
 
-    def __init__(self, dsn: str, legacy_sqlite_path: str | None = None):
+    def __init__(
+        self,
+        dsn: str,
+        legacy_sqlite_path: str | None = None,
+        *,
+        connect_timeout_seconds: int = 1,
+        acquire_timeout_seconds: float = 0.25,
+        statement_timeout_milliseconds: int = 1500,
+        lock_timeout_milliseconds: int = 500,
+        idle_transaction_timeout_milliseconds: int = 2000,
+        max_concurrency: int = 8,
+    ):
         self.dsn = dsn.replace("postgresql+psycopg://", "postgresql://", 1)
         self.path = self.dsn
+        self.connect_timeout_seconds = connect_timeout_seconds
+        self.acquire_timeout_seconds = acquire_timeout_seconds
+        self.statement_timeout_milliseconds = statement_timeout_milliseconds
+        self.lock_timeout_milliseconds = lock_timeout_milliseconds
+        self.idle_transaction_timeout_milliseconds = idle_transaction_timeout_milliseconds
+        self._connection_slots = threading.BoundedSemaphore(max_concurrency)
         self._initialize()
         if legacy_sqlite_path and Path(legacy_sqlite_path).exists():
             self._migrate_sqlite_once(legacy_sqlite_path)
@@ -375,8 +429,37 @@ class PostgresIncidentStore(IncidentStore):
         import psycopg
         from psycopg.rows import dict_row
 
-        with psycopg.connect(self.dsn, row_factory=dict_row) as raw:
-            yield _PostgresAdapter(raw)
+        acquired = self._connection_slots.acquire(
+            timeout=database_acquire_timeout(self.acquire_timeout_seconds)
+        )
+        if not acquired:
+            raise DatabaseBusyError(
+                "database concurrency capacity was not available before the acquisition timeout"
+            )
+        options = (
+            f"-c statement_timeout={self.statement_timeout_milliseconds} "
+            f"-c lock_timeout={self.lock_timeout_milliseconds} "
+            "-c idle_in_transaction_session_timeout="
+            f"{self.idle_transaction_timeout_milliseconds}"
+        )
+        try:
+            with psycopg.connect(
+                self.dsn,
+                row_factory=dict_row,
+                connect_timeout=self.connect_timeout_seconds,
+                options=options,
+            ) as raw:
+                if database_deadline_expired():
+                    raise DatabaseBusyError(
+                        "database request deadline expired before query execution"
+                    )
+                yield _PostgresAdapter(raw)
+                if database_deadline_expired():
+                    raise DatabaseBusyError(
+                        "database request deadline expired before transaction commit"
+                    )
+        finally:
+            self._connection_slots.release()
 
     def _initialize(self):
         statements = [

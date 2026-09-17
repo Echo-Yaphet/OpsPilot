@@ -32,7 +32,7 @@ from .repair import (
     RepairSandboxClient,
     SDKRepairAgent,
 )
-from .storage import IncidentStore, PostgresIncidentStore
+from .storage import IncidentStore, PostgresIncidentStore, run_database_call
 from .skill_promotion import (
     SkillCandidateRequest,
     SkillPromotionError,
@@ -45,7 +45,18 @@ from .workflow import IncidentWorkflow
 app = FastAPI(title="OpsPilot Control API", version="0.1.0")
 instrument_fastapi(app, "opspilot-control-api")
 tools = LiveOpsTools(settings)
-store = (PostgresIncidentStore(settings.database_url, settings.database_path)
+store = (PostgresIncidentStore(
+             settings.database_url,
+             settings.database_path,
+             connect_timeout_seconds=settings.database_connect_timeout_seconds,
+             acquire_timeout_seconds=settings.database_acquire_timeout_seconds,
+             statement_timeout_milliseconds=settings.database_statement_timeout_milliseconds,
+             lock_timeout_milliseconds=settings.database_lock_timeout_milliseconds,
+             idle_transaction_timeout_milliseconds=(
+                 settings.database_idle_transaction_timeout_milliseconds
+             ),
+             max_concurrency=settings.database_max_concurrency,
+         )
          if settings.database_url else IncidentStore(settings.database_path))
 skill_promotion = SkillPromotionService(
     store, settings.skill_cases_file, settings.skill_workspace_root,
@@ -75,7 +86,20 @@ if settings.embedding_base_url and settings.embedding_model:
         embeddings=embedding_provider,
         minimum_similarity=settings.semantic_minimum_similarity,
     )
-event_memory = PostgresEventMemory(settings.memory_database_url) if settings.memory_database_url else None
+postgres_timeout_options = {
+    "connect_timeout_seconds": settings.database_connect_timeout_seconds,
+    "acquire_timeout_seconds": settings.database_acquire_timeout_seconds,
+    "statement_timeout_milliseconds": settings.database_statement_timeout_milliseconds,
+    "lock_timeout_milliseconds": settings.database_lock_timeout_milliseconds,
+    "idle_transaction_timeout_milliseconds": (
+        settings.database_idle_transaction_timeout_milliseconds
+    ),
+    "max_concurrency": settings.database_max_concurrency,
+}
+event_memory = (
+    PostgresEventMemory(settings.memory_database_url, **postgres_timeout_options)
+    if settings.memory_database_url else None
+)
 verification_policy_provider = VerificationPolicyProvider(
     settings.default_verification_policy(),
     settings.verification_service_policies,
@@ -115,7 +139,9 @@ if settings.llm_base_url and settings.llm_model:
     )
 investigator = None
 if settings.investigation_mode == "agents_sdk":
-    journal = (PostgresInvestigationJournal(settings.memory_database_url)
+    journal = (PostgresInvestigationJournal(
+                   settings.memory_database_url, **postgres_timeout_options
+               )
                if settings.memory_database_url else InvestigationJournal(settings.database_path))
     investigator = SDKInvestigator(
         tools,
@@ -128,6 +154,7 @@ if settings.investigation_mode == "agents_sdk":
         event_memory=event_memory, embeddings=embedding_provider,
         service_version=settings.service_version,
         skill_provider=skill_promotion.active_instructions,
+        database_timeout_seconds=settings.database_request_timeout_seconds,
     )
 repair_agent = None
 if settings.repair_mode == "agents_sdk":
@@ -154,6 +181,7 @@ workflow = IncidentWorkflow(tools, investigator=investigator, executor=GatewayEx
     default_verification_policy=settings.default_verification_policy(),
     verification_policies=settings.verification_policies(),
     verification_policy_provider=verification_policy_provider,
+    database_timeout_seconds=settings.database_request_timeout_seconds,
 )
 app.add_middleware(
     CORSMiddleware,
@@ -173,7 +201,9 @@ async def memory_status():
     """Read-only visibility for the optional event-memory backend."""
     if event_memory is None:
         return {"backend": "disabled", "healthy": True, "active_events": 0}
-    return event_memory.health()
+    return await run_database_call(
+        event_memory.health, timeout_seconds=settings.database_request_timeout_seconds
+    )
 
 
 @app.get("/api/v1/skills/cases")
@@ -229,7 +259,11 @@ async def verification_policy_status():
 async def verification_policy_peer_status(authorization: str | None = Header(default=None)):
     """Expose the same read-only status to authenticated peer fan-out only."""
     try:
-        verification_policy_peer_authenticator.verify(authorization)
+        await run_database_call(
+            verification_policy_peer_authenticator.verify,
+            authorization,
+            timeout_seconds=settings.database_request_timeout_seconds,
+        )
     except IdentityError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     return verification_policy_provider.status()
@@ -245,7 +279,12 @@ async def verification_policy_rollout():
 async def analyze(request: AnalyzeRequest):
     try:
         state = await workflow.run(request)
-        state = store.save(state, approved=request.approved if request.execute else None)
+        state = await run_database_call(
+            store.save,
+            state,
+            approved=request.approved if request.execute else None,
+            timeout_seconds=settings.database_request_timeout_seconds,
+        )
         return state
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -275,12 +314,19 @@ async def approve_repair(request: RepairApprovalRequest):
 
 @app.get("/api/v1/incidents", response_model=list[IncidentState])
 async def list_incidents(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
-    return store.list(limit=limit, offset=offset)
+    return await run_database_call(
+        store.list,
+        limit=limit,
+        offset=offset,
+        timeout_seconds=settings.database_request_timeout_seconds,
+    )
 
 
 @app.get("/api/v1/incidents/{incident_id}", response_model=IncidentState)
 async def get_incident(incident_id: str):
-    incident = store.get(incident_id)
+    incident = await run_database_call(
+        store.get, incident_id, timeout_seconds=settings.database_request_timeout_seconds
+    )
     if incident is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return incident
@@ -316,7 +362,11 @@ async def alertmanager_webhook(payload: dict):
         service = labels.get("service", "payment-service")
         symptom = annotations.get("summary") or labels.get("alertname", "Alertmanager incident")
         key = alert_key(alert)
-        existing = store.get_by_alert_key(key)
+        existing = await run_database_call(
+            store.get_by_alert_key,
+            key,
+            timeout_seconds=settings.database_request_timeout_seconds,
+        )
         if alert.get("status", payload.get("status", "firing")) == "resolved":
             if existing:
                 existing.status = "alert_resolved"
@@ -324,7 +374,12 @@ async def alertmanager_webhook(payload: dict):
                     agent=AgentName.COORDINATOR,
                     message="Alertmanager reported that the alert signal recovered",
                 ))
-                existing = store.save(existing, alert_key=key)
+                existing = await run_database_call(
+                    store.save,
+                    existing,
+                    alert_key=key,
+                    timeout_seconds=settings.database_request_timeout_seconds,
+                )
                 processed.append(existing)
             continue
         request = AnalyzeRequest(
@@ -343,7 +398,12 @@ async def alertmanager_webhook(payload: dict):
             state = await workflow.run(request)
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
-        state = store.save(state, alert_key=key)
+        state = await run_database_call(
+            store.save,
+            state,
+            alert_key=key,
+            timeout_seconds=settings.database_request_timeout_seconds,
+        )
         processed.append(state)
     return {"status": "accepted", "processed": len(processed), "incidents": processed}
 

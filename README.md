@@ -20,7 +20,7 @@ Stage 8 新增外置 verification-policy rollout controller。控制器没有 HT
 
 Stage 9 为 rollout controller 增加可验证的中断恢复。候选与节点/canary/quorum 计划绑定为 digest，重启时严格读取 fsync 审计并核对实际 canary/stable 内容；损坏审计或同候选变更计划会 fail-closed。正式批次在 canary 接受后、stable 发布前强制终止 controller，证明 stable 保持旧 revision；replacement 进程重新确认 canary 后只推进一次 stable，最终恢复到 2/2 `converged`。这仍是持久 volume 未丢失的同主机进程恢复，不是 controller HA。完整结果见 [Stage 9 controller 恢复报告](docs/evaluations/stage9-controller-resume-r1-report.md)。
 
-Stage 10 新增可重复的 Control API 数据库故障域演练。正式批次隔离 primary 的数据库网络时，该节点在 15 秒边界内失败关闭，恢复网络后失败 incident 仍为 404，canary 同期保持可写；随后 primary 重新加入。physical-streaming standby 在追平后被提升，稳定数据库别名切换到新主库，两个 Control API 无需重建即恢复写入与跨节点读取，4/4 范围内 incident 保留且无执行/Verification 副作用。这仍是同一 Docker Desktop 主机上的故障域仿真，不是跨主机 HA、自动选主或 SLA。完整结果见 [Stage 10 故障域报告](docs/evaluations/stage10-fault-domain-r5-report.md)。
+Stage 10 新增可重复的 Control API 数据库故障域演练。后续快速失败批次为 PostgreSQL 建连、并发槽获取、查询、锁、空闲事务和应用调用增加明确超时，并把同步数据库工作移出 API 事件循环。正式批次 `postgres-fast-fail-r4-20260917` 的 8 个并发隔离写全部在 0.094 秒内以 HTTP 502 失败关闭，隔离节点 `/health` 仍在 0.006 秒返回 200，canary 同期保持可写；恢复 16 秒后 8 个失败 incident 仍全部为 404。随后 standby 提升与双节点无重建恢复也通过。这仍是同一 Docker Desktop 主机上的有界故障域仿真，不是跨主机 HA、生产容量、自动选主或 SLA。完整结果见 [PostgreSQL 快速失败报告](docs/evaluations/postgres-fast-fail-r4-report.md)。
 
 Stage 11 将 verification-policy peer/controller 的本地共享 HMAC 身份接入现有外部 workload identity issuer。Control API 与 controller 各自持有 proof private key，按请求领取绑定 audience、subject、路径、只读 operation、目标节点和一次性 `jti` 的短期 RS256 credential；peer 只持 issuer public key。正式批次完成 canary→stable→2/2 quorum，并验证 issuer nonce 重放、未知节点、缺失凭证、旧 HMAC、credential 重放和错误 target 全部拒绝。完整结果见 [Stage 11 workload identity 报告](docs/evaluations/stage11-policy-identity-r2-report.md)。
 
@@ -184,6 +184,8 @@ make control-api-fault-domain-validate \
 ```
 
 验收会隔离一个 Control API 的数据库网络，要求该节点失败关闭而另一节点保持可写，再恢复网络并确认重新加入；随后等待 physical-streaming standby 追平，停止旧主库、提升 standby、移动稳定数据库别名，并要求两个既有 Control API 恢复写入和交叉读取。所有请求均为 recommendation-only。结果写入 `work/fault-domain-evaluations/<unique-id>/` 并设为只读；临时数据库卷/网络会删除，默认 Control API 自动恢复到原 `memory-db`。该命令是本机故障域演练，不替代真实跨主机或托管 PostgreSQL HA 验收。
+
+当前默认数据库保护参数为：建连 1 秒、并发槽获取 0.25 秒、应用数据库调用 2.5 秒、SQL 1.5 秒、锁 0.5 秒、空闲事务 2 秒、每进程最多 8 个并发数据库操作。均可通过对应的 `DATABASE_*` 环境变量配置。应用调用超时后，后台建连即使稍后完成，也必须在执行 SQL 前再次检查截止时间；正式批次还会在恢复后等待 16 秒并逐一要求失败 incident 为 404。
 
 ## Stage 11 policy peer/controller workload identity 验收
 

@@ -4,7 +4,9 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -13,6 +15,12 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
 from .tools import OpsTools
+from .storage import (
+    DatabaseBusyError,
+    database_acquire_timeout,
+    database_deadline_expired,
+    run_database_call,
+)
 
 
 class InvestigationBudget(BaseModel):
@@ -70,10 +78,25 @@ class InvestigationJournal:
 class PostgresInvestigationJournal:
     """PostgreSQL lifecycle store used by the Stage 3 harness profile."""
 
-    def __init__(self, dsn: str):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        connect_timeout_seconds: int = 1,
+        acquire_timeout_seconds: float = 0.25,
+        statement_timeout_milliseconds: int = 1500,
+        lock_timeout_milliseconds: int = 500,
+        idle_transaction_timeout_milliseconds: int = 2000,
+        max_concurrency: int = 8,
+    ):
         self.dsn = dsn
-        import psycopg
-        with psycopg.connect(dsn) as connection:
+        self.connect_timeout_seconds = connect_timeout_seconds
+        self.acquire_timeout_seconds = acquire_timeout_seconds
+        self.statement_timeout_milliseconds = statement_timeout_milliseconds
+        self.lock_timeout_milliseconds = lock_timeout_milliseconds
+        self.idle_transaction_timeout_milliseconds = idle_transaction_timeout_milliseconds
+        self._connection_slots = threading.BoundedSemaphore(max_concurrency)
+        with self.connection() as connection:
             with connection.transaction():
                 connection.execute("SELECT pg_advisory_xact_lock(675091743)")
                 connection.execute(
@@ -86,9 +109,42 @@ class PostgresInvestigationJournal:
                     "ON investigation_runs(incident_id, updated_at DESC)"
                 )
 
-    def save(self, record: dict) -> None:
+    @contextmanager
+    def connection(self):
         import psycopg
-        with psycopg.connect(self.dsn) as connection:
+
+        if not self._connection_slots.acquire(
+            timeout=database_acquire_timeout(self.acquire_timeout_seconds)
+        ):
+            raise DatabaseBusyError(
+                "database concurrency capacity was not available before the acquisition timeout"
+            )
+        options = (
+            f"-c statement_timeout={self.statement_timeout_milliseconds} "
+            f"-c lock_timeout={self.lock_timeout_milliseconds} "
+            "-c idle_in_transaction_session_timeout="
+            f"{self.idle_transaction_timeout_milliseconds}"
+        )
+        try:
+            with psycopg.connect(
+                self.dsn,
+                connect_timeout=self.connect_timeout_seconds,
+                options=options,
+            ) as connection:
+                if database_deadline_expired():
+                    raise DatabaseBusyError(
+                        "database request deadline expired before query execution"
+                    )
+                yield connection
+                if database_deadline_expired():
+                    raise DatabaseBusyError(
+                        "database request deadline expired before transaction commit"
+                    )
+        finally:
+            self._connection_slots.release()
+
+    def save(self, record: dict) -> None:
+        with self.connection() as connection:
             connection.execute(
                 "INSERT INTO investigation_runs(run_id, incident_id, payload, updated_at) "
                 "VALUES(%s,%s,%s::jsonb,now()) ON CONFLICT(run_id) DO UPDATE SET "
@@ -97,8 +153,7 @@ class PostgresInvestigationJournal:
             )
 
     def load_running(self, incident_id: str) -> dict | None:
-        import psycopg
-        with psycopg.connect(self.dsn) as connection:
+        with self.connection() as connection:
             row = connection.execute(
                 "SELECT payload FROM investigation_runs WHERE incident_id=%s "
                 "ORDER BY updated_at DESC LIMIT 1", (incident_id,),
@@ -160,7 +215,7 @@ class SDKInvestigator:
     def __init__(self, tools: OpsTools, model, journal: InvestigationJournal,
                  budget: InvestigationBudget | None = None, *, event_memory=None,
                  embeddings=None, service_version: str = "local-compose-v1",
-                 skill_provider=None):
+                 skill_provider=None, database_timeout_seconds: float = 2.5):
         self.tools = tools
         self.model = model
         self.journal = journal
@@ -169,6 +224,7 @@ class SDKInvestigator:
         self.embeddings = embeddings
         self.service_version = service_version
         self.skill_provider = skill_provider
+        self.database_timeout_seconds = database_timeout_seconds
         # Admit one investigation at a time on a local model.
         self.slot = asyncio.Semaphore(1)
 
@@ -187,7 +243,11 @@ class SDKInvestigator:
         if service not in {"payment-service", "order-service", "user-service"}:
             raise ValueError("investigation service is not allowlisted")
         started = time.monotonic()
-        record = self.journal.load_running(incident_id)
+        record = await run_database_call(
+            self.journal.load_running,
+            incident_id,
+            timeout_seconds=self.database_timeout_seconds,
+        )
         if record is None:
             record = {
                 "run_id": str(uuid4()), "incident_id": incident_id, "service": service,
@@ -212,7 +272,9 @@ class SDKInvestigator:
         promoted_skill = None
         if self.skill_provider is not None:
             try:
-                promoted_skill = self.skill_provider()
+                promoted_skill = await run_database_call(
+                    self.skill_provider, timeout_seconds=self.database_timeout_seconds
+                )
                 record["skill_version"] = promoted_skill[0]
             except Exception:
                 # Skill enrichment fails open; mandatory deterministic probes remain unchanged.
@@ -220,19 +282,33 @@ class SDKInvestigator:
         if self.event_memory is not None:
             try:
                 query = f"service: {service}; symptom: {symptom[:500]}"
-                query_embedding = self.embeddings.embed([query])[0] if self.embeddings else None
-                record["related_event_memory"] = self.event_memory.search(
-                    service=service, service_version=self.service_version,
-                    conditions={"symptom": symptom[:200]}, query_embedding=query_embedding,
+
+                def search_memory():
+                    query_embedding = (
+                        self.embeddings.embed([query])[0] if self.embeddings else None
+                    )
+                    return self.event_memory.search(
+                        service=service,
+                        service_version=self.service_version,
+                        conditions={"symptom": symptom[:200]},
+                        query_embedding=query_embedding,
+                    )
+
+                record["related_event_memory"] = await run_database_call(
+                    search_memory, timeout_seconds=self.database_timeout_seconds
                 )
             except Exception:
                 # Memory enriches context but never blocks deterministic investigation.
                 record["related_event_memory"] = []
-        self.journal.save(record)
+        await run_database_call(
+            self.journal.save, record, timeout_seconds=self.database_timeout_seconds
+        )
 
         if self.slot.locked():
             record.update(status="degraded", termination_reason="model_busy", elapsed_seconds=0.0)
-            self.journal.save(record)
+            await run_database_call(
+                self.journal.save, record, timeout_seconds=self.database_timeout_seconds
+            )
             return record
 
         aggregate = record.get("aggregate_usage", {})
@@ -240,7 +316,9 @@ class SDKInvestigator:
         if remaining_tokens < 64:
             record.update(status="degraded", termination_reason="token_budget_exhausted",
                           elapsed_seconds=0.0)
-            self.journal.save(record)
+            await run_database_call(
+                self.journal.save, record, timeout_seconds=self.database_timeout_seconds
+            )
             return record
 
         async def observe(name: str, arguments: str):
@@ -252,7 +330,9 @@ class SDKInvestigator:
             record["tool_calls"] += 1
             observation = {"tool": name, "status": "started"}
             record["observations"].append(observation)
-            self.journal.save(record)
+            await run_database_call(
+                self.journal.save, record, timeout_seconds=self.database_timeout_seconds
+            )
             try:
                 if name == "service_health":
                     result = await self.tools.service_health(service)
@@ -279,7 +359,9 @@ class SDKInvestigator:
                 observation.update(status="failed", error_type=type(exc).__name__)
             finally:
                 record["compacted_context"] = compact_investigation_context(record)
-                self.journal.save(record)
+                await run_database_call(
+                    self.journal.save, record, timeout_seconds=self.database_timeout_seconds
+                )
                 if self.event_memory is not None and observation.get("status") != "started":
                     try:
                         content = {key: value for key, value in observation.items()
@@ -287,14 +369,28 @@ class SDKInvestigator:
                         if observation.get("result") is not None:
                             content["result"] = observation["result"]
                         text = json.dumps(content, sort_keys=True, ensure_ascii=False)
-                        embedding = self.embeddings.embed([text])[0] if self.embeddings else None
-                        self.event_memory.remember(
-                            event_id=f"{record['run_id']}:{len(record['observations']) - 1}",
-                            incident_id=incident_id, service=service,
-                            service_version=self.service_version,
-                            conditions={"symptom": symptom[:200]}, category="tool_observation",
-                            content=content, embedding=embedding,
-                            expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+
+                        def remember_event():
+                            embedding = (
+                                self.embeddings.embed([text])[0] if self.embeddings else None
+                            )
+                            self.event_memory.remember(
+                                event_id=(
+                                    f"{record['run_id']}:"
+                                    f"{len(record['observations']) - 1}"
+                                ),
+                                incident_id=incident_id,
+                                service=service,
+                                service_version=self.service_version,
+                                conditions={"symptom": symptom[:200]},
+                                category="tool_observation",
+                                content=content,
+                                embedding=embedding,
+                                expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+                            )
+
+                        await run_database_call(
+                            remember_event, timeout_seconds=self.database_timeout_seconds
                         )
                     except Exception:
                         pass
@@ -369,5 +465,7 @@ class SDKInvestigator:
         finally:
             record["elapsed_seconds"] = round(time.monotonic() - started, 3)
             record["compacted_context"] = compact_investigation_context(record)
-            self.journal.save(record)
+            await run_database_call(
+                self.journal.save, record, timeout_seconds=self.database_timeout_seconds
+            )
         return record

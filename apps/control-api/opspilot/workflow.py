@@ -12,6 +12,7 @@ from .knowledge import KnowledgeRetriever, NoopKnowledgeRetriever
 from .llm import IncidentAnalyzer, InvestigationPlan, LLMAnalysis
 from .models import AgentEvent, AgentName, AnalyzeRequest, Evidence, IncidentState, Recommendation, RiskLevel
 from .tools import OpsTools
+from .storage import run_database_call
 
 
 class VerificationPolicyResolver(Protocol):
@@ -52,6 +53,7 @@ class IncidentWorkflow:
         default_verification_policy: VerificationPolicy | None = None,
         verification_policy_provider: VerificationPolicyResolver | None = None,
         investigator=None,
+        database_timeout_seconds: float = 2.5,
     ):
         self.tools = tools
         # Keep the original constructor knobs compatible while moving runtime
@@ -69,6 +71,7 @@ class IncidentWorkflow:
         self.knowledge_retriever = knowledge_retriever or NoopKnowledgeRetriever()
         self.incident_analyzer = incident_analyzer
         self.investigator = investigator
+        self.database_timeout_seconds = database_timeout_seconds
         self.graph = self._build_graph()
 
     def event(self, state: IncidentState, agent: AgentName, message: str) -> None:
@@ -310,18 +313,30 @@ class IncidentWorkflow:
         else:
             state.root_cause, state.confidence = "Insufficient evidence; dependency or application degradation suspected", 0.45
             targets = [request.service]
-        runbooks = self.knowledge_retriever.retrieve_runbooks(
-            request.service, request.symptom, state.root_cause
+        runbooks = await run_database_call(
+            self.knowledge_retriever.retrieve_runbooks,
+            request.service,
+            request.symptom,
+            state.root_cause,
+            timeout_seconds=self.database_timeout_seconds,
         )
         plan = graph_state.get("investigation_plan")
         if plan is not None and plan.knowledge_query != request.symptom:
-            expanded = self.knowledge_retriever.retrieve_runbooks(
-                request.service, plan.knowledge_query, state.root_cause
+            expanded = await run_database_call(
+                self.knowledge_retriever.retrieve_runbooks,
+                request.service,
+                plan.knowledge_query,
+                state.root_cause,
+                timeout_seconds=self.database_timeout_seconds,
             )
             seen = {item.runbook_id for item in runbooks}
             runbooks.extend(item for item in expanded if item.runbook_id not in seen)
             runbooks = runbooks[:3]
-        history = self.knowledge_retriever.retrieve_incidents(state)
+        history = await run_database_call(
+            self.knowledge_retriever.retrieve_incidents,
+            state,
+            timeout_seconds=self.database_timeout_seconds,
+        )
         state.evidence.append(Evidence(
             source="runbook", summary="deterministic runbook retrieval",
             data=[item.model_dump(mode="json") for item in runbooks],
@@ -587,7 +602,11 @@ class IncidentWorkflow:
         # Resolve once so one incident uses an immutable policy snapshot even if
         # the centrally managed file changes while checks are in progress.
         policy = (
-            self.verification_policy_provider.policy_for(service)
+            await run_database_call(
+                self.verification_policy_provider.policy_for,
+                service,
+                timeout_seconds=self.database_timeout_seconds,
+            )
             if self.verification_policy_provider
             else self.verification_policies.get(service, self.default_verification_policy)
         )

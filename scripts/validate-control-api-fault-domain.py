@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -115,6 +116,84 @@ class Rehearsal:
         })
         return status
 
+    def timed_request(self, node: str, method: str, path: str) -> tuple[int, float]:
+        started = time.monotonic()
+        status, _ = self.request(node, method, path, timeout=5)
+        return status, time.monotonic() - started
+
+    def timed_analyze(self, node: str, incident_id: str) -> tuple[int, float]:
+        started = time.monotonic()
+        status = self.analyze(node, incident_id)
+        return status, time.monotonic() - started
+
+    def probe_isolated_node_from_survivor(
+        self, survivor_container: str, incident_ids: list[str]
+    ) -> dict[str, object]:
+        """Probe the isolated API over the unaffected shared API network.
+
+        Docker Desktop can temporarily drop host-port forwarding when a container
+        network is detached. Running from the survivor keeps ingress on the shared
+        `opspilot` network, so this measures database isolation instead of host NAT.
+        """
+        program = r'''
+import concurrent.futures
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+base_url = "http://control-api:8080"
+incident_ids = json.loads(sys.argv[1])
+
+def request(method, path, payload=None):
+    data = json.dumps(payload).encode() if payload is not None else None
+    item = urllib.request.Request(
+        base_url + path,
+        data=data,
+        method=method,
+        headers={"content-type": "application/json"} if data else {},
+    )
+    started = time.monotonic()
+    try:
+        with urllib.request.urlopen(item, timeout=5) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        status = 599
+    return status, time.monotonic() - started
+
+def analyze(incident_id):
+    return request("POST", "/api/v1/incidents/analyze", {
+        "incident_id": incident_id,
+        "service": "payment-service",
+        "symptom": f"database isolation probe {incident_id}",
+        "execute": False,
+        "approved": False,
+    })
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=len(incident_ids) + 1) as executor:
+    writes = [executor.submit(analyze, incident_id) for incident_id in incident_ids]
+    health = executor.submit(request, "GET", "/health")
+    write_results = [future.result() for future in writes]
+    health_result = health.result()
+
+print(json.dumps({"writes": write_results, "health": health_result}))
+'''
+        result = subprocess.run(
+            ["docker", "exec", "-i", survivor_container, "python", "-", json.dumps(incident_ids)],
+            cwd=ROOT,
+            env=self.environment,
+            check=True,
+            text=True,
+            input=program,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=10,
+        )
+        return json.loads(result.stdout)
+
     def wait_request(self, node: str, path: str, expected: int = 200, attempts: int = 30) -> int:
         last = 599
         for _ in range(attempts):
@@ -175,9 +254,10 @@ class Rehearsal:
             str(uuid5(NAMESPACE_URL, f"{self.args.evaluation_id}:{phase}"))
             for phase in ("baseline", "survivor", "post-primary", "post-canary")
         ]
-        partition_failed_id = str(uuid5(
-            NAMESPACE_URL, f"{self.args.evaluation_id}:partition-failed"
-        ))
+        partition_failed_ids = [
+            str(uuid5(NAMESPACE_URL, f"{self.args.evaluation_id}:partition-failed:{index}"))
+            for index in range(8)
+        ]
         plan = FaultDomainPlan(
             evaluation_id=self.args.evaluation_id,
             nodes=["control-api-primary", "control-api-canary"],
@@ -208,13 +288,32 @@ class Rehearsal:
         self.event("baseline_verified", cross_node_visible=baseline_visible)
 
         primary_container = self.container_id("control-api")
+        canary_container = self.container_id("control-api-canary")
         network = self.environment["STAGE10_NETWORK_NAME"]
         self.command(["docker", "network", "disconnect", network, primary_container])
-        partition_status = self.analyze(primary_url, partition_failed_id)
-        survivor_status = self.analyze(canary_url, incident_ids[1])
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            isolated_probe_future = executor.submit(
+                self.probe_isolated_node_from_survivor,
+                canary_container,
+                partition_failed_ids,
+            )
+            survivor_future = executor.submit(self.analyze, canary_url, incident_ids[1])
+            isolated_probe = isolated_probe_future.result()
+            survivor_status = survivor_future.result()
+        partition_results = isolated_probe["writes"]
+        isolated_health_status, isolated_health_seconds = isolated_probe["health"]
+        concurrent_partition_statuses = [status for status, _ in partition_results]
+        partition_status = concurrent_partition_statuses[0]
+        partition_failure_seconds = max(elapsed for _, elapsed in partition_results)
         self.event(
             "database_network_partitioned",
             isolated_node_status=partition_status,
+            isolated_node_failure_seconds=round(partition_failure_seconds, 6),
+            failure_target_seconds=3.0,
+            concurrent_isolated_statuses=concurrent_partition_statuses,
+            isolated_health_status=isolated_health_status,
+            isolated_health_seconds=round(isolated_health_seconds, 6),
+            ingress_probe="survivor-over-shared-api-network",
             survivor_write_status=survivor_status,
         )
 
@@ -222,15 +321,21 @@ class Rehearsal:
         recovered_status = self.wait_request(
             primary_url, f"/api/v1/incidents/{incident_ids[1]}", attempts=30,
         )
-        time.sleep(3)
-        late_status, _ = self.request(
-            canary_url, "GET", f"/api/v1/incidents/{partition_failed_id}", timeout=5,
-        )
-        partitioned_write_absent = late_status == 404
+        # The first failed batch exposed a 15-second lower-level resolver wait.
+        # Wait beyond it before checking absence so a cancelled worker cannot be
+        # mistaken for a safely rolled-back request.
+        time.sleep(16)
+        late_statuses = [
+            self.request(
+                canary_url, "GET", f"/api/v1/incidents/{incident_id}", timeout=5,
+            )[0]
+            for incident_id in partition_failed_ids
+        ]
+        partitioned_write_absent = all(status == 404 for status in late_statuses)
         self.event(
             "partition_healed",
             recovered_node_status=recovered_status,
-            partitioned_write_status_after_heal=late_status,
+            partitioned_write_statuses_after_heal=late_statuses,
         )
 
         replica_caught_up = self.wait_replica_rows(incident_ids[:2])
@@ -302,6 +407,11 @@ class Rehearsal:
         return plan, FaultDomainObservation(
             baseline_cross_node_visible=baseline_visible,
             partitioned_node_status=partition_status,
+            partitioned_node_failure_seconds=partition_failure_seconds,
+            partitioned_node_failure_target_seconds=3.0,
+            concurrent_partition_statuses=concurrent_partition_statuses,
+            isolated_health_status=isolated_health_status,
+            isolated_health_seconds=isolated_health_seconds,
             partitioned_write_absent_after_heal=partitioned_write_absent,
             survivor_write_status=survivor_status,
             recovered_node_status=recovered_status,

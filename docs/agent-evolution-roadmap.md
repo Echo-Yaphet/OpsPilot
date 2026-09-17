@@ -251,3 +251,25 @@ operated HA PostgreSQL and redundant issuer instances. No local fixture can prod
 formal result, and a future pass will still be bounded acceptance evidence rather than an SLA,
 zero-data-loss, RPO or RTO claim. See
 [`docs/evaluations/stage12-external-fault-domain-protocol.md`](evaluations/stage12-external-fault-domain-protocol.md).
+
+## Post-Stage 12 local hardening: PostgreSQL fast failure and request isolation
+
+Status: completed on 2026-09-17. See
+[`docs/evaluations/postgres-fast-fail-r4-report.md`](evaluations/postgres-fast-fail-r4-report.md).
+
+All Control API PostgreSQL persistence paths now use explicit configurable connection,
+concurrency-acquisition, statement, lock, idle-transaction and application-call deadlines.
+Synchronous store and retrieval work no longer blocks the async API event loop. A request
+deadline is propagated into its worker; if lower-level connection setup finishes after the
+caller has timed out, the connection is closed before any SQL can run.
+
+Formal batch `postgres-fast-fail-r4-20260917` sent eight concurrent writes to a
+database-isolated node over the unaffected shared API network. All eight failed closed with
+HTTP 502 in at most 0.094 seconds, `/health` stayed responsive in 0.006 seconds, and the
+surviving node remained writable. Sixteen seconds after network recovery all eight failed IDs
+still returned 404. Both existing nodes then resumed writes and cross-node reads after the
+same physical-standby promotion used by Stage 10, without execution or Verification side
+effects.
+
+This is a bounded same-host concurrency and recovery observation, not production capacity,
+cross-host HA, an SLA, RPO/RTO or zero-data-loss proof. The real Stage 12 batch remains pending.

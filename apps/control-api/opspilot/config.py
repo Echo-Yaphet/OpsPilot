@@ -313,6 +313,15 @@ class Settings(BaseSettings):
     executor_gateway_timeout: float = 15
     database_path: str = "/data/opspilot.db"
     database_url: str | None = None
+    database_connect_timeout_seconds: int = Field(default=1, ge=1, le=30)
+    database_acquire_timeout_seconds: float = Field(default=0.25, gt=0, le=30)
+    database_request_timeout_seconds: float = Field(default=2.5, gt=0, le=30)
+    database_statement_timeout_milliseconds: int = Field(default=1500, ge=100, le=30000)
+    database_lock_timeout_milliseconds: int = Field(default=500, ge=50, le=30000)
+    database_idle_transaction_timeout_milliseconds: int = Field(
+        default=2000, ge=100, le=60000
+    )
+    database_max_concurrency: int = Field(default=8, ge=1, le=64)
     memory_database_url: str | None = None
     service_version: str = "local-compose-v1"
     embedding_base_url: str | None = None

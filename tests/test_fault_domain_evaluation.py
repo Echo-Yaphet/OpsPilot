@@ -18,6 +18,11 @@ def passing_fixture():
     observation = FaultDomainObservation(
         baseline_cross_node_visible=True,
         partitioned_node_status=500,
+        partitioned_node_failure_seconds=1.2,
+        partitioned_node_failure_target_seconds=3.0,
+        concurrent_partition_statuses=[500] * 8,
+        isolated_health_status=200,
+        isolated_health_seconds=0.04,
         partitioned_write_absent_after_heal=True,
         survivor_write_status=200,
         recovered_node_status=200,
@@ -55,6 +60,20 @@ def test_writable_partition_or_side_effects_fail_report():
     assert report.checks["partitioned_node_failed_closed"] is False
     assert report.checks["partitioned_write_not_committed_late"] is False
     assert report.checks["recommendation_only_no_execution"] is False
+
+
+def test_slow_or_capacity_leaking_partition_fails_report():
+    plan, observation = passing_fixture()
+    observation.partitioned_node_failure_seconds = 3.01
+    observation.concurrent_partition_statuses[2] = 200
+    observation.isolated_health_status = 599
+
+    report = build_fault_domain_report(plan, observation)
+
+    assert report.passed is False
+    assert report.checks["partitioned_node_failed_within_target"] is False
+    assert report.checks["concurrent_partition_requests_failed_closed"] is False
+    assert report.checks["isolated_node_health_remained_responsive"] is False
 
 
 def test_artifacts_are_read_only_and_cannot_be_overwritten(tmp_path):

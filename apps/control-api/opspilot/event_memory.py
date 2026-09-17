@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
+
+from .storage import (
+    DatabaseBusyError,
+    database_acquire_timeout,
+    database_deadline_expired,
+)
 
 
 def apply_postgres_migration(connection, version: int, statements: list[str]) -> None:
@@ -31,15 +39,61 @@ def apply_postgres_migration(connection, version: int, statements: list[str]) ->
 class PostgresEventMemory:
     """Stores lifecycle events and applies metadata filters before vector ranking."""
 
-    def __init__(self, dsn: str):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        connect_timeout_seconds: int = 1,
+        acquire_timeout_seconds: float = 0.25,
+        statement_timeout_milliseconds: int = 1500,
+        lock_timeout_milliseconds: int = 500,
+        idle_transaction_timeout_milliseconds: int = 2000,
+        max_concurrency: int = 8,
+    ):
         self.dsn = dsn
+        self.connect_timeout_seconds = connect_timeout_seconds
+        self.acquire_timeout_seconds = acquire_timeout_seconds
+        self.statement_timeout_milliseconds = statement_timeout_milliseconds
+        self.lock_timeout_milliseconds = lock_timeout_milliseconds
+        self.idle_transaction_timeout_milliseconds = idle_transaction_timeout_milliseconds
+        self._connection_slots = threading.BoundedSemaphore(max_concurrency)
         self._migrate()
 
+    @contextmanager
     def connection(self):
         import psycopg
         from psycopg.rows import dict_row
 
-        return psycopg.connect(self.dsn, row_factory=dict_row)
+        if not self._connection_slots.acquire(
+            timeout=database_acquire_timeout(self.acquire_timeout_seconds)
+        ):
+            raise DatabaseBusyError(
+                "database concurrency capacity was not available before the acquisition timeout"
+            )
+        options = (
+            f"-c statement_timeout={self.statement_timeout_milliseconds} "
+            f"-c lock_timeout={self.lock_timeout_milliseconds} "
+            "-c idle_in_transaction_session_timeout="
+            f"{self.idle_transaction_timeout_milliseconds}"
+        )
+        try:
+            with psycopg.connect(
+                self.dsn,
+                row_factory=dict_row,
+                connect_timeout=self.connect_timeout_seconds,
+                options=options,
+            ) as connection:
+                if database_deadline_expired():
+                    raise DatabaseBusyError(
+                        "database request deadline expired before query execution"
+                    )
+                yield connection
+                if database_deadline_expired():
+                    raise DatabaseBusyError(
+                        "database request deadline expired before transaction commit"
+                    )
+        finally:
+            self._connection_slots.release()
 
     def _migrate(self) -> None:
         # The advisory lock serializes startup across primary/canary processes. All
